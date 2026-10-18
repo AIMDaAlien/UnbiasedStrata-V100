@@ -1,0 +1,135 @@
+# V100 tuning record (2026-10-18)
+
+Machine: Tesla V100-PCIe-32GB (sm_70, PCIe Gen3 x16, 13.1 GB/s host->device), Ryzen 9 7950X, 64 GB
+DDR5-6000, Linux 7.2.5 (Omarchy), NVIDIA 580.178.04, CUDA 12.9 + GCC 14 toolchain for the build.
+Model: Qwen3.8-Flash-Next GSQ-RCO IQ3_S, context 196,608, INT8 KV with a 32K resident window,
+MTP draft 4, 12 expert-pool workers. Production service: `unbiasedstrata.service` on port 8083.
+
+## Constraints
+
+- GPU power limit 100 W at boot (`gpu-nv-power.service`; card default 250 W). The PC lost power four
+  times under sustained load (last at a 175 W sustained GPU limit), so all measurement runs go through
+  `~/llm-trade-bench/tools/guarded-run.sh`, one heavy job at a time. Short probes up to 150 W were
+  approved; 175 W and above were not.
+- RAM 64 GB, service capped at 56 GiB; the IQ3_S pinned expert complement is 25.73 GiB plus a 2.32 GiB
+  pinned KV copy. IQ3_S and the 196,608 context are kept.
+
+## Harness
+
+`local/v100_tune.py`: paired A/B of launch profiles in alternating order, each candidate in its own
+temporary user service (56 GiB, no swap), warm-up request first, then N short coding requests
+(~700-token prompts, medium reasoning, 400 generated tokens) and optional 80K/128K/180K fresh
+fixtures from `~/Work/v100-20261013/long-context-fixtures`. Per request it records the engine's own
+prompt/decode line, wall time, GPU power/SM clock/temperature at 2 Hz and CPU package energy (RAPL),
+giving tokens/s and joules per generated token. Candidates may run root-helper commands before and
+after (`/usr/local/sbin/v100-tune`: power limit 100..150 W, SM clock lock, CPU EPP, restore).
+
+## Where the time and energy go (baseline, 100 W cap)
+
+| phase | SM clock | GPU | result |
+| --- | ---: | ---: | --- |
+| decode, short prompts | ~1050 MHz (795..1357) | 98 W | 61-68 tok/s, 72% draft acceptance, 97% cache hits |
+| decode, after 80K prompt | ~790 MHz | 100 W | 61 tok/s, 89% cache hits |
+| prefill 80K | ~770 MHz | 100 W | 873 tok/s (1,432 tok/s at 250 W on 2026-10-13) |
+
+- The 100 W cap binds in both phases. Prefill is compute-bound and loses ~40% against 250 W; decode
+  loses less because it is memory- and PCIe-bound.
+- Energy per generated token (short requests): GPU 1.9-2.1 J, **CPU package 2.4-2.6 J**. The CPU does
+  2-3% of the expert work in decode yet costs more than the GPU. Idle package power is 86 W because
+  the `performance` governor holds every core at a 3.0 GHz floor (cpu0 scaling_min_freq 3,012,481 kHz).
+
+## Measured: prefill ring and chunk (2 rounds, 80K fresh fixture + 2 short each)
+
+| candidate | chunk / ring | prefill tok/s | 80K wall s | decode tok/s |
+| --- | --- | ---: | ---: | ---: |
+| baseline | 8192 / 96 | 873 | 94.9 | 61.2 |
+| `STRATA_PREFILL_AUTO_MAX=16384` + `STRATA_PREFILL_RING=192` | 16384 / 192 | 917 | 90.5 | 60.8 |
+| same, ring 384 | 16384 / 384 | 918 | 90.5 | 60.1 |
+| same, ring 512 | 16384 / 512 | 914 | 90.8 | 61.2 |
+
+The gain (+5%, -4.4 s per 80K) is the chunk, not the ring: all three ring sizes measure the same, so at
+this clock the GPU, not the PCIe stream, is the limiter. The baseline's 96-slot ring comes from the
+pinned-share check running before the complement is pinned (`src/prefill/prefill.cpp`, `ring_slots`);
+upstream fixed the classification in 0.1.41 (issue 1353). Short-prompt decode and energy unchanged.
+
+## Measured: decode knobs (1 round, 4 short requests each; the second round was lost to the reserve-300 crash)
+
+| candidate | decode tok/s | accept | GPU J/tok | CPU J/tok | note |
+| --- | ---: | ---: | ---: | ---: | --- |
+| baseline (12 workers, draft 4, KV window 32K) | 67.3 | 0.76 | 1.91 | 2.34 | |
+| 4 workers | 67.3 | 0.76 | 1.92 | **2.09** | same speed, -11% CPU energy |
+| 8 workers | 67.4 | 0.76 | 1.91 | 2.24 | |
+| 16 workers | 67.5 | 0.76 | 1.91 | 2.36 | |
+| `STRATA_POOL_SPIN_US=2000` | 67.4 | 0.76 | 1.89 | 2.19 | workers sleep after 2 ms instead of 20 ms |
+| draft 3 | 63.5 | 0.78 | 1.94 | 2.37 | slower |
+| draft 6 | 63.7 | 0.64 | 1.96 | 2.37 | slower, acceptance drops |
+| KV window 64K | 63.3 | 0.72 | 1.91 | 2.42 | fewer expert slots (12,812), slower |
+| `--vram-reserve-mib 300` | - | - | - | - | 46 MiB free after load; MMQ cudaMalloc OOM on the first prompt. Dead end. |
+
+With 97-98% of routed experts hitting the GPU cache, the worker count does not move decode speed at all;
+it only moves CPU energy. Draft 4 and the 32K KV window stay. The CPU-side energy is dominated by the
+governor floor (see above), so the EPP measurement decides the rest.
+
+## Measured: GPU power limit and locked clocks (2 rounds, 80K fresh fixture + 2 short each)
+
+| GPU limit / clock | decode tok/s | prefill tok/s | 80K wall s | GPU+CPU J/token (short) | sampled peak W |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100 W boost (production) | 65.1 | 879 | 94.5 | 4.31 | 150-174 |
+| 100 W locked 1000 MHz | 61.8 | 880 | 94.8 | 4.36 | 143 |
+| 100 W locked 900 MHz | 56.7 | 877 | 95.7 | 4.56 | 144 |
+| 100 W locked 800 MHz | 51.8 | 849 | 98.8 | 4.79 | 135 |
+| **125 W boost** | **71.0** | **1122** | **74.7** | **4.28** | 161-169 |
+| 150 W boost | 74.0 | 1264 | 66.6 | 4.48 | 201-208 |
+| 150 W locked 1100 MHz | 65.0 | 1217 | 69.4 | 4.31 | 177 |
+
+GPU joules per token are flat from 100 to 125 W (prefill ~0.115 J per prompt token at both); CPU joules per
+token fall as the GPU finishes sooner, so the system total is lowest at 125 W. Locking the SM clock under a cap
+never helped: the power capper already chooses the best clock, a lock only trims transient peaks by ~30 W. The
+card already draws 150-174 W transients at the 100 W cap; the 2026-10-15 power loss followed a sustained 160-182 W
+average, which 125 W stays well under. Decision (user, 2026-10-18): soak at 125 W for ~15 minutes of continuous
+180K-prompt work under the watchdog, adopt 125 W as the boot cap if clean.
+
+## Measured: CPU energy preference under load (2 rounds, 4 short each)
+
+| EPP | decode tok/s | CPU J/token |
+| --- | ---: | ---: |
+| performance (governor performance) | 64.0 | 2.37 |
+| balance_performance (governor powersave) | 63.8 | 2.38 |
+| balance_power | 63.6 | 2.46 |
+
+No effect under load: the expert pool keeps the cores busy whatever the preference. The EPP's value is at idle
+(86 W package with the performance governor's 3.0 GHz floor); idle measurement pending.
+
+## Engine 0.1.43.1 build
+
+`build-v100-0143/unbiased-strata` (74 MB) built from the imported upstream 0.1.43.1 sources plus the fork's front
+end, CUDA 12.9 / GCC 14, sm_70, `STRATA_EXPERIMENTAL_SM60=ON`, 4 jobs under the watchdog: 3 minutes, CPU Tctl peaked
+at 86 C (the BIOS cap is 85 C: the CPU cooler is marginal for sustained all-core load). A/B against the tuned 0.1.39
+binary pending (`local/v100/cands-engine.json`: defaults, `STRATA_SM70_TABLE=1`, `STRATA_ROUTE_TAIL_SKIP=0`,
+`STRATA_KV_PREFETCH=1`, `STRATA_PREFILL_CPU_SHARE=0`).
+
+## Pending in this session
+
+- Engine import: upstream Strata 0.1.43.1 (same llama.cpp pin 3cf03257 as the fork) staged on branch
+  `v100-tuning`; configure for sm_70 passes. It brings opt-in V100 decode kernels (`STRATA_SM70_TABLE=1`),
+  the stager/pinned-share fix, CPU prompt share for sub-1K prompts, `STRATA_KV_PREFETCH`, stager sleep.
+  0.1.44+ is avoided: issue 2936 reports -20-27% single-GPU decode from 0.1.44.
+- Kernel drop-ins drafted in `~/Work/v100-20261013/kernel/`: `iommu=pt`, NVIDIA PAT, NMI watchdog off.
+
+## Vision (approved 2026-10-18, after the tuning lands)
+
+Goal: the model's own encoder (`mmproj-Qwen3.8-Flash-Next-BF16.gguf`, 27-layer ViT + projector) on the GPU, image
+token budget 2048 per picture (upstream default 1024), no disk staging. The engine already takes images (`--vision`,
+GENI requests with an embeddings file and M-RoPE positions); upstream's `tools/vision/strata_vision.cpp` builds the
+encoder helper from llama.cpp's mtmd. The fork's front end refuses `--vision` today. Work: build the helper from the
+submodule, accept OpenAI `image_url` parts (data: URLs and files) in the front end, run the helper, pass the
+embeddings to the engine; size `--vram-reserve-mib` from a measured start (the 300 MiB experiment showed 46 MiB free
+is an OOM), then A/B text speed with the reserve on vs off and verify a 180K prompt with two images fits.
+Expected cost: ~700 fewer expert slots (5%), 2-6% decode.
+
+Encoder files (`/home/aim/opt/Strata-data/models/mmproj/`): `mmproj-Qwen3.8-Flash-Next-BF16.gguf` 907,543,008 B,
+sha256 b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0 (matches the Hub). A Q8_0 requantization
+(`tools/vision/mmproj_q8.py`, llama.cpp's own rules: 2-D weights Q8_0, biases/norms/position embeddings F32, the
+patch-embedding convolution and the 27 `ffn_down` weights (inner dim 4304, not a multiple of 32) F16) is
+614,933,856 B, sha256 182b8b0643e90a4480f6686170d6ca7055cc52f006bf0a1780caad62d873b126. The Q8_0 file is the one to
+load: ~290 MB less VRAM for the encoder weights at a negligible accuracy cost.

@@ -1,0 +1,5 @@
+[
+ {"name": "epp-performance", "pre": ["sudo -n /usr/local/sbin/v100-tune epp performance"]},
+ {"name": "epp-balance_performance", "pre": ["sudo -n /usr/local/sbin/v100-tune epp balance_performance"], "post": ["sudo -n /usr/local/sbin/v100-tune epp performance"]},
+ {"name": "epp-balance_power", "pre": ["sudo -n /usr/local/sbin/v100-tune epp balance_power"], "post": ["sudo -n /usr/local/sbin/v100-tune epp performance"]}
+]

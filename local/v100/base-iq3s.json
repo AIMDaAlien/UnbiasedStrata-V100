@@ -1,0 +1,21 @@
+{
+  "model": "/home/aim/opt/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "pack": "/home/aim/Work/v100-20261013/packs/iq3_s",
+  "mtp": "/home/aim/opt/Strata-data/mtp/rt",
+  "port": 18081,
+  "context": 196608,
+  "threads": 12,
+  "ple_io": "direct",
+  "spec": 4,
+  "kv": "int8",
+  "kv_resident": 32768,
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "0",
+    "OMP_NUM_THREADS": "1",
+    "STRATA_PF_FUSED": null,
+    "STRATA_PREFILL_AUTO_MAX": null,
+    "STRATA_PREFILL_RING": null,
+    "STRATA_RESIDENT_HEADROOM_GIB": null
+  },
+  "binary": "/home/aim/Work/v100-20261013/UnbiasedStrata/build-v100/unbiased-strata"
+}

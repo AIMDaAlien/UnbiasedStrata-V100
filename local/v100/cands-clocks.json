@@ -1,0 +1,9 @@
+[
+ {"name": "pl100-boost", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 100"]},
+ {"name": "pl100-lgc1000", "pre": ["sudo -n /usr/local/sbin/v100-tune pl 100", "sudo -n /usr/local/sbin/v100-tune lgc 1000 1000"], "post": ["sudo -n /usr/local/sbin/v100-tune rgc"]},
+ {"name": "pl100-lgc900", "pre": ["sudo -n /usr/local/sbin/v100-tune pl 100", "sudo -n /usr/local/sbin/v100-tune lgc 900 900"], "post": ["sudo -n /usr/local/sbin/v100-tune rgc"]},
+ {"name": "pl100-lgc800", "pre": ["sudo -n /usr/local/sbin/v100-tune pl 100", "sudo -n /usr/local/sbin/v100-tune lgc 800 800"], "post": ["sudo -n /usr/local/sbin/v100-tune rgc"]},
+ {"name": "pl125-boost", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 125"], "post": ["sudo -n /usr/local/sbin/v100-tune pl 100"]},
+ {"name": "pl150-boost", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 150"], "post": ["sudo -n /usr/local/sbin/v100-tune pl 100"]},
+ {"name": "pl150-lgc1100", "pre": ["sudo -n /usr/local/sbin/v100-tune pl 150", "sudo -n /usr/local/sbin/v100-tune lgc 1100 1100"], "post": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 100"]}
+]

@@ -1,0 +1,56 @@
+[
+ {
+  "name": "baseline"
+ },
+ {
+  "name": "threads8",
+  "config": {
+   "threads": 8
+  }
+ },
+ {
+  "name": "threads4",
+  "config": {
+   "threads": 4
+  }
+ },
+ {
+  "name": "threads16",
+  "config": {
+   "threads": 16
+  }
+ },
+ {
+  "name": "spec3",
+  "config": {
+   "spec": 3
+  }
+ },
+ {
+  "name": "spec6",
+  "config": {
+   "spec": 6
+  }
+ },
+ {
+  "name": "spin2ms",
+  "environment": {
+   "STRATA_POOL_SPIN_US": "2000"
+  }
+ },
+ {
+  "name": "kvres64k",
+  "config": {
+   "kv_resident": 65536
+  }
+ },
+ {
+  "name": "reserve300",
+  "config": {
+   "engine_args": [
+    "--vram-reserve-mib",
+    "300"
+   ]
+  }
+ }
+]

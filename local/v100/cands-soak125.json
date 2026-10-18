@@ -1,0 +1,1 @@
+[{"name": "soak125", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 125"], "post": ["sudo -n /usr/local/sbin/v100-tune pl 100"]}]

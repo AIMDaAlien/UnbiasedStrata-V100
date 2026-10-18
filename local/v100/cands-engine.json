@@ -1,0 +1,47 @@
+[
+ {
+  "name": "ref-0139"
+ },
+ {
+  "name": "new-default",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"
+  }
+ },
+ {
+  "name": "new-sm70",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_SM70_TABLE": "1"
+  }
+ },
+ {
+  "name": "new-tailskip0",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_ROUTE_TAIL_SKIP": "0"
+  }
+ },
+ {
+  "name": "new-kvprefetch",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_KV_PREFETCH": "1"
+  }
+ },
+ {
+  "name": "new-cpushare0",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_PREFILL_CPU_SHARE": "0"
+  }
+ }
+]

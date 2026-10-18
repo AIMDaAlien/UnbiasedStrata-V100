@@ -1,0 +1,26 @@
+[
+ {
+  "name": "baseline"
+ },
+ {
+  "name": "ring384-auto16k",
+  "environment": {
+   "STRATA_PREFILL_RING": "384",
+   "STRATA_PREFILL_AUTO_MAX": "16384"
+  }
+ },
+ {
+  "name": "ring192-auto16k",
+  "environment": {
+   "STRATA_PREFILL_RING": "192",
+   "STRATA_PREFILL_AUTO_MAX": "16384"
+  }
+ },
+ {
+  "name": "ring512-auto16k",
+  "environment": {
+   "STRATA_PREFILL_RING": "512",
+   "STRATA_PREFILL_AUTO_MAX": "16384"
+  }
+ }
+]
