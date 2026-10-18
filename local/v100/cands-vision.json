@@ -1,0 +1,17 @@
+[
+ {
+  "name": "text-only"
+ },
+ {
+  "name": "vision-r2200",
+  "config": {
+   "vision_mmproj": "/home/aim/opt/Strata-data/models/mmproj/mmproj-Qwen3.8-Flash-Next-Q8_0.gguf",
+   "vision_tokens": 2048,
+   "vision_helper": "/home/aim/opt/UnbiasedStrata/local/bin/strata-vision",
+   "engine_args": [
+    "--vram-reserve-mib",
+    "2200"
+   ]
+  }
+ }
+]

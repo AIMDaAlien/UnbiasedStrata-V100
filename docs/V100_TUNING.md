@@ -162,9 +162,34 @@ decode after an 80K prompt 61 -> 79 tok/s (+30%), 80K prefill 873 -> 1180 tok/s 
 system energy per generated token lower at every point measured, idle CPU package 85 -> 60 W once
 `adopt/cpu-epp.service` is enabled.
 
+## Task-suite wall clock (frozen 24-task DeepSWE2, seed 40, medium reasoning)
+
+| | Oct 13: 0.1.39, 250 W | now: 0.1.43.1 + Volta table, 125 W, vision reserve on |
+|---|---:|---:|
+| median task wall | 37.2 s | 32.6 s |
+| total, 24 tasks | 1017 s | 954 s |
+| median TTFT (≈650-token prompts) | 1.5 s | 1.6 s |
+| median decode | 77.3 tok/s | 84.5 tok/s |
+| passes | 22/24 | 23/24 |
+
+17 of 24 tasks faster, paired geometric-mean wall ratio 0.909; on the 14 tasks whose answers were within 15% of the same length, median wall 37.3 → 32.3 s. The 125 W configuration beats the card's 250 W run from five days ago on wall clock, with one more task passing (e21-index-invalidation). Short-prompt TTFT is unchanged: a 650-token prompt prefills in ~1.5 s either way.
+
+## Vision cost and perception (125 W, 12 workers)
+
+Encoder off vs on (`--vram-reserve-mib 2200`, Q8_0 encoder, 2048 image tokens; 2 rounds): decode short 83.2 -> 80.8
+tok/s (-3%), after 80K 81.3 -> 76.7 (-6%, 12,237 vs 13,012 cache slots), prefill unchanged, correctness gate 2/2.
+Reserve 1600 was an OOM at the first verify window (74 MiB free); production uses 2400 for margin. Screenshot
+read-back (511x1376 terminal UI): title, selected entry and all four file names exact at both 1024 and 2048 image
+tokens (the picture is ~720 tokens, under both caps); one of two IP ports missed. Eight synthetic end-to-end checks pass.
+
 ## Still open
 
-- Reboot for `iommu=pt` and the NVIDIA PAT module option; re-check the engine's "PCIe probe" line (13.1 GB/s today).
+- Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at
+  13.1 GB/s (already at the Gen3 x16 practical limit; the passthrough removes IOTLB work, not bandwidth). The NVIDIA PAT
+  option is inert: driver 580 exposes no module parameters under /sys/module/nvidia (the drop-in can be removed).
+  `cpu-epp.service` ran but power-profiles-daemon (Omarchy) re-applied its `performance` profile; `powerprofilesctl set
+  balanced` is the persistent fix: governor powersave, EPP balance_performance, idle package 59 W / Tctl 63 C with the
+  model loaded (was 84 W / 76 C).
 - Vision: encoder helper build, front-end image support, VRAM reserve sizing (approved, after this).
 - CPU cooling: Tctl reaches the 85 C BIOS cap under any sustained all-core load (builds, long prefills) regardless
   of worker count. A cooler or fan-curve fix is the remaining hardware item; the -20 Curve Optimizer is a

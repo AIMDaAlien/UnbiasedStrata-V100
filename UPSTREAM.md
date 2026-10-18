@@ -4,7 +4,7 @@
 
 | What | Where | Version |
 | --- | --- | --- |
-| Engine | https://github.com/Niko1221/Strata | commit `6f32ec070f23ced9f50e704d854d775da52591ab`, engine 0.1.39 |
+| Engine | https://github.com/Niko1221/Strata | commit `a0116b2` (v0.1.43.1), engine 0.1.43.1 (was `6f32ec07`, 0.1.39, until 2026-10-18; 0.1.44+ avoided: upstream issue 2936 reports a 20-27% single-GPU decode regression) |
 | ggml (CPU backend, CUDA matrix kernels) | https://github.com/ggml-org/llama.cpp, as the submodule `third_party/llama.cpp` | commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`, the one upstream Strata pins |
 
 The first commit of this repository is the upstream snapshot as published. One file was not imported:
@@ -19,8 +19,11 @@ The first commit of this repository is the upstream snapshot as published. One f
   `docs/upstream/DETAILS.md` and the paper.
 - **Added:** `frontend/`, the C++ front end (tokenizer, chat template, output parser and HTTP API, using
   llama.cpp's code from the submodule), and a build target that links it with the engine into one binary.
-- **Engine source (`src/`, `include/`):** unchanged so far. The engine's own program is compiled into the
-  binary with its entry point renamed; the front end starts it as a child process.
+- **Engine source (`src/`, `include/`):** upstream's, unchanged. The engine's own program is compiled into the
+  binary with its entry point renamed; the front end starts it as a child process. `tests/` and `tools/vision`
+  are carried from upstream because the build file references them (tests are not built).
+- **Images:** the front end runs upstream's `strata-vision` helper (`tools/vision`) and speaks the engine's GENI
+  protocol; `tools/vision/mmproj_q8.py` requantizes the BF16 encoder to Q8_0 with llama.cpp's rules.
 
 Code paths for other models, AMD cards and Windows are still present in the engine source. They are not
 built by `make build`, not tested and not supported here. They are left in place so the engine stays

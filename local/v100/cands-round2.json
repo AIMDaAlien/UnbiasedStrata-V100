@@ -1,0 +1,8 @@
+[
+ {"name": "final"},
+ {"name": "automax32k", "environment": {"STRATA_PREFILL_AUTO_MAX": "32768"}},
+ {"name": "adaptasync", "config": {"engine_args": ["--adapt-async", "1"]}},
+ {"name": "adaptswaps192", "config": {"engine_args": ["--adapt-swaps", "192"]}},
+ {"name": "adaptevery2", "config": {"engine_args": ["--adapt-every", "2"]}},
+ {"name": "plecache4m", "config": {"engine_args": ["--ple-row-cache", "4194304"]}}
+]

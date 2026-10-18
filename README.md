@@ -24,7 +24,8 @@ Not done yet:
 - The prepared model files (below) are not published yet.
 - The engine source is still upstream's in full. 85 of its 272 source files are not compiled into the binary
   at all; removing those, and then the multi-GPU, AMD, Windows and other-model code, is the next piece of work.
-- Image input is not supported.
+- Image input: `--vision MMPROJ` (below). Pictures arrive as `image_url` parts (data: URLs or local files); nothing
+  is fetched from the network.
 
 ## Known problems
 
@@ -40,8 +41,8 @@ One configuration, on purpose:
 
 | | |
 | --- | --- |
-| Model | Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS, with the draft (MTP) head |
-| GPU | One NVIDIA card with 24 GB or more, RTX 30 series or newer |
+| Model | Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS or IQ3_S, with the draft (MTP) head; optionally its vision encoder |
+| GPU | One NVIDIA card with 24 GB or more, RTX 30 series or newer; Tesla V100 with the CUDA 12 build (`-DSTRATA_EXPERIMENTAL_SM60=ON -DCMAKE_CUDA_ARCHITECTURES=70`, see docs/V100_TUNING.md) |
 | RAM | 128 GB |
 | CPU | x86-64 with AVX2 |
 | OS | Linux |
@@ -77,6 +78,26 @@ driver and the CUDA runtime libraries there, as llama.cpp does.
 It listens on `127.0.0.1:8080` and serves `POST /v1/chat/completions` (with streaming), `GET /v1/models` and
 `GET /health`. Loading takes a few minutes. Options: `--ctx N` (default 32768), `--threads N`, `--host`,
 `--port`. Inside a container set `--threads` yourself: the default is every physical core of the host.
+
+### Images
+
+The model's own vision encoder (`mmproj-Qwen3.8-Flash-Next-BF16.gguf` from the same Hugging Face repository, or a
+Q8_0 requantization of it made with `tools/vision/mmproj_q8.py`) runs on the GPU as a helper process built from
+`tools/vision` (llama.cpp's mtmd library, the pinned submodule):
+
+```
+cmake -S tools/vision -B build-vision -DLLAMA_DIR=$PWD/third_party/llama.cpp -DSTRATA_VISION_CUDA=ON \
+      -DSTRATA_PORTABLE=OFF -DCMAKE_CUDA_ARCHITECTURES=native
+cmake --build build-vision --target strata-vision      # -> build-vision/bin/strata-vision
+./unbiased-strata ... --vision /models/mmproj-Qwen3.8-Flash-Next-Q8_0.gguf --vision-helper build-vision/bin/strata-vision \
+                  --vision-tokens 2048 -- --vram-reserve-mib 1600
+```
+
+`--vision-tokens` is the most tokens one picture becomes (upstream's default is 1024; 2048 keeps screenshots and
+small text legible). The encoder needs VRAM the engine must leave free: `--vram-reserve-mib 1600` covers the Q8_0
+encoder at 2048 tokens (about 1.1 GiB) on top of the engine's own reserve; the expert cache is a few hundred
+experts smaller for it. Requests send pictures as OpenAI `image_url` parts with a `data:` URL or a local file path
+(JPEG, PNG, GIF, BMP); `http(s)` URLs are refused, as the binary opens no outgoing connection.
 
 Requests are greedy unless they set a `temperature` above zero. The model thinks before it answers; send
 `"reasoning_effort": "none"` to turn that off. Tool calling follows the OpenAI format (`tools`, `tool_calls`).
