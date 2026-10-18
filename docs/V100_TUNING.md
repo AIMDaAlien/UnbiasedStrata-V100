@@ -218,6 +218,19 @@ process, 125 W cap.
 (+47%), 80K prefill 873 -> 1200 (+37%), 80K request 95 -> 69 s, task-suite median 37.2 s (at 250 W!) -> 29.6 s,
 with the vision encoder loaded and lower energy per token.
 
+## Round 4: upstream PR 1401's Volta prompt kernels (branch `v100-pr1401`)
+
+PR 1401 (rewin123, open, conflicts with upstream main) carries two halves: the Volta decode kernels (already in
+0.1.43.1 as `STRATA_SM70_TABLE=1`, in production) and an FP16 tensor-core prompt-expert GEMM for sm_70
+(`pf_wmma`, +9.6-10.3% prompt on the author's V100). A three-way merge against the PR's true base (e8ca9afd, an
+ancestor of 0.1.43.1) applied cleanly except the six hunks that re-gate the decode half, which keep 0.1.43.1's
+opt-in. Build `build-v100-pr1401/`; the PR's own parity test and a paired A/B against production follow.
+
+PR 1401 result (production config, 2 rounds): parity test 0 failures on this card (IQ2_XXS/IQ2_S/IQ1_M/Q2_0 within
+5e-4 of reference); 80K prefill 1200 -> 1214 tok/s (+1.2%), 80K wall 69.2 -> 68.0 s, correctness gate 2/2, decode
+within noise. Far from the PR's +10%: at the 125 W cap the prompt path is power-bound (~960 MHz SM), so faster
+tensor-core math buys little. Kept (free, parity-verified); `STRATA_PF_WMMA=0` restores the MMQ path.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at
