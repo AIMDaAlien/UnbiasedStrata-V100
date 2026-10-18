@@ -20,8 +20,12 @@ def command(config):
     cmd = [str(config.get('binary', ROOT / 'build/unbiased-strata')),
             '--model', config['model'], '--pack', config['pack'], '--mtp', config['mtp'],
             '--host', '127.0.0.1', '--port', str(config['port']),
-            '--ctx', str(config['context']), '--threads', str(config['threads']),
-            '--', '--ple-io', config['ple_io'], '--resident-experts',
+            '--ctx', str(config['context']), '--threads', str(config['threads'])]
+    if config.get('vision_mmproj'):   # images: the model's own encoder on the GPU (tools/vision/strata-vision)
+        cmd += ['--vision', config['vision_mmproj'], '--vision-tokens', str(config.get('vision_tokens', 2048))]
+        if config.get('vision_helper'):
+            cmd += ['--vision-helper', config['vision_helper']]
+    cmd += ['--', '--ple-io', config['ple_io'], '--resident-experts',
             '--kv', kv, '--spec', str(config['spec'])]
     if resident:
         cmd += ['--kv-resident', str(resident)]
@@ -76,7 +80,8 @@ def main():
         print(shlex.join(cmd))
         return
     missing = [p for p in [cmd[0], config['model'], config['pack'] + '/expert-profile.bin',
-                          config['mtp'] + '/experts.bin'] if not Path(p).exists()]
+                          config['mtp'] + '/experts.bin'] + [config[k] for k in ('vision_mmproj', 'vision_helper') if config.get(k)]
+               if not Path(p).exists()]
     if missing:
         sys.exit('Missing local artifacts: ' + ', '.join(missing))
     os.execve(cmd[0], cmd, environment(config))
