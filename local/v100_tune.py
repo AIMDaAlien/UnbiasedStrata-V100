@@ -155,7 +155,7 @@ def stream_request(payload, timeout=7200):
             if 'usage' in event:
                 usage = event['usage']
     return {'wall_seconds': time.monotonic() - started, 'ttft_seconds': ttft, 'usage': usage,
-            'finish_reason': finish, 'content_chars': len(content), 'content_tail': content[-200:]}
+            'finish_reason': finish, 'content_chars': len(content), 'content_tail': content[-200:], 'content': content}
 
 
 def engine_lines(log, offset):
@@ -247,6 +247,7 @@ def run_candidate(base, cand, out, round_no, args, salt):
                 payload = {'messages': short_messages(i, salt), 'temperature': 0,
                            'reasoning_effort': args.reasoning, 'max_tokens': args.max_tokens, 'stream': True}
                 res, offset = measure(f'short-{i}', payload, log, offset, samples)
+                if not args.save_content: res.pop('content', None)
                 record['requests'].append(res)
                 print(f'  {name} short-{i}: wall {res["wall_seconds"]:.1f}s '
                       f'decode {res["engine"].get("decode_tps")} tok/s gen {res["engine"].get("generated")} '
@@ -259,8 +260,12 @@ def run_candidate(base, cand, out, round_no, args, salt):
                 payload = {'messages': msgs, 'temperature': 0, 'reasoning_effort': 'none',
                            'max_tokens': 256, 'stream': True}
                 res, offset = measure(f'long-{length}-{li}', payload, log, offset, samples)
+                secrets = fx.get('secrets') or {}
+                if secrets:   # the fixture asks for its three planted values: a correctness gate for every candidate
+                    res['secrets_ok'] = all(str(v) in res['content'] for v in secrets.values())
+                if not args.save_content: res.pop('content', None)
                 record['requests'].append(res)
-                print(f'  {name} long-{length}: wall {res["wall_seconds"]:.1f}s '
+                print(f'  {name} long-{length}: secrets_ok={res.get("secrets_ok")} wall {res["wall_seconds"]:.1f}s '
                       f'prefill {res["engine"].get("prefill_tps")} tok/s decode {res["engine"].get("decode_tps")} '
                       f'W {res["power"].get("gpu_watts_mean", 0):.0f} sm {res["power"].get("sm_mhz_mean", 0):.0f}', flush=True)
             record['status'] = 'ok'
@@ -302,6 +307,7 @@ def summarize(records):
             if q.get('cpu_joules_per_token'): b['cpu_jpt'].append(q['cpu_joules_per_token'])
             if e.get('drafts_offered'): b['acc'].append(e['drafts_accepted'] / e['drafts_offered'])
             if e.get('hit_rate') is not None: b['hit'].append(e['hit_rate'])
+            if 'secrets_ok' in q: b.setdefault('ok', []).append(q['secrets_ok'])
             if q.get('power'):
                 b['sm'].append(q['power'].get('sm_mhz_mean', 0)); b['w'].append(q['power'].get('gpu_watts_mean', 0))
     rows = []
@@ -310,13 +316,14 @@ def summarize(records):
         rows.append({'candidate': cand, 'kind': kind, 'n': b['n'], 'wall_s': med(b['wall']),
                      'decode_tps': med(b['decode']), 'prefill_tps': med(b['prefill']),
                      'gpu_J_per_tok': med(b['gpu_jpt']), 'cpu_J_per_tok': med(b['cpu_jpt']),
-                     'accept': med(b['acc']), 'hit_pct': med(b['hit']), 'sm_mhz': med(b['sm']), 'gpu_w': med(b['w'])})
+                     'accept': med(b['acc']), 'hit_pct': med(b['hit']), 'sm_mhz': med(b['sm']), 'gpu_w': med(b['w']),
+                     'secrets_ok': (f"{sum(b['ok'])}/{len(b['ok'])}" if b.get('ok') else None)})
     return rows
 
 
 def print_table(rows):
     cols = ['candidate', 'kind', 'n', 'wall_s', 'decode_tps', 'prefill_tps', 'gpu_J_per_tok', 'cpu_J_per_tok',
-            'accept', 'hit_pct', 'sm_mhz', 'gpu_w']
+            'accept', 'hit_pct', 'sm_mhz', 'gpu_w', 'secrets_ok']
     print(' | '.join(cols))
     for r in rows:
         print(' | '.join(str(r.get(c)) for c in cols))
@@ -334,6 +341,7 @@ def main():
     ap.add_argument('--max-tokens', type=int, default=700)
     ap.add_argument('--reasoning', default='medium')
     ap.add_argument('--only', nargs='*', help='candidate names to run (default all)')
+    ap.add_argument('--save-content', action='store_true', help='keep every full answer in record.json')
     ap.add_argument('--salt-long', action='store_true', help='make every long fixture request unique (soak: no prompt-cache reuse)')
     ap.add_argument('--summary-only', action='store_true', help='re-summarize an existing output directory')
     args = ap.parse_args()

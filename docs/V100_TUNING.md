@@ -108,13 +108,68 @@ at 86 C (the BIOS cap is 85 C: the CPU cooler is marginal for sustained all-core
 binary pending (`local/v100/cands-engine.json`: defaults, `STRATA_SM70_TABLE=1`, `STRATA_ROUTE_TAIL_SKIP=0`,
 `STRATA_KV_PREFETCH=1`, `STRATA_PREFILL_CPU_SHARE=0`).
 
-## Pending in this session
+## 125 W soak (passed) and adoption
 
-- Engine import: upstream Strata 0.1.43.1 (same llama.cpp pin 3cf03257 as the fork) staged on branch
-  `v100-tuning`; configure for sm_70 passes. It brings opt-in V100 decode kernels (`STRATA_SM70_TABLE=1`),
-  the stager/pinned-share fix, CPU prompt share for sub-1K prompts, `STRATA_KV_PREFETCH`, stager sleep.
-  0.1.44+ is avoided: issue 2936 reports -20-27% single-GPU decode from 0.1.44.
-- Kernel drop-ins drafted in `~/Work/v100-20261013/kernel/`: `iommu=pt`, NVIDIA PAT, NMI watchdog off.
+Five back-to-back full 180K prefills (prompt cache defeated), 15.6 min of continuous load at the 125 W cap: GPU power
+mean 123 W, p95 157 W, peak sample 192 W; GPU 56 C max; CPU Tctl 85.8 C max (the BIOS cap, 12 pool workers); no
+reset, no watchdog stop. 180K prefill 939-947 tok/s at 125 W; decode after the 180K prompt rose from 60 to 78 tok/s
+over the five requests as the adaptive cache's hit rate climbed from 88% to 98%. Decision: 125 W is the boot cap
+(`adopt/gpu-nv-power-override.conf`, installed with `adopt/install-gpu-125w.sh`). The engine A/B runs at 125 W.
+
+## Measured: engine 0.1.39 vs 0.1.43.1 at 125 W (2 rounds, 80K fresh fixture + 2 short each, 4 workers, chunk 16384)
+
+| candidate | decode short | decode after 80K | prefill 80K tok/s | GPU J/tok (short) | CPU J/tok (short) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0.1.39 (production binary) | 70.1 | 66.9 | 1183 | 2.19 | 1.93 |
+| 0.1.43.1 defaults | 74.1 | 73.5 | 1176 | 2.08 | 1.80 |
+| **0.1.43.1 + `STRATA_SM70_TABLE=1`** | **80.8** | **79.0** | 1177 | **1.93** | **1.77** |
+| 0.1.43.1 + `STRATA_ROUTE_TAIL_SKIP=0` | 74.4 | 72.2 | 1177 | 1.99 | 1.86 |
+| 0.1.43.1 + `STRATA_KV_PREFETCH=1` | 74.2 | 73.8 | 1177 | 2.12 | 1.81 |
+| 0.1.43.1 + `STRATA_PREFILL_CPU_SHARE=0` | 73.9 | 73.4 | 1177 | 2.13 | 1.82 |
+
+The Volta decode table (PR 1401's kernels, bitwise-identical output per the PR) is worth +15% decode over the old
+binary and -12% GPU energy per token. Prefill is unchanged between engines at this cap. The route tail skip
+(default on, changes answers slightly) and the CPU prompt share (default on below 1024-token chunks, changes answers
+slightly) measured no gain here, so both are turned off for exact answers at no cost. KV prefetch: no gain.
+
+Idle CPU package power: governor performance 85 W (Tctl 75 C, cores at 4.4 GHz idle) vs powersave +
+balance_performance 60 W (Tctl 62 C). Under load the two are equal, so the balanced preference is adopted
+(`adopt/cpu-epp.service`).
+
+## Final configuration sweep at 125 W and production switch (2 rounds, 80K fixture with correctness gate + 2 short)
+
+| candidate | decode short | decode after 80K | prefill 80K | CPU J/tok (short) | 80K answer has all 3 planted values |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 0.1.39, 12 workers (old production) | 71.9 | 65.3 | 1188 | 2.08 | 2/2 |
+| final, 4 workers | 80.4 | 73.8 | 1182 | 1.74 | 2/2 |
+| final + `STRATA_STAGER_SLEEP=1` | 80.4 | 73.6 | 1180 | 1.74 | 2/2 |
+| **final, 12 workers** | **81.6** | **79.5** | 1180 | 1.94 | 2/2 |
+
+"final" = engine 0.1.43.1 + `STRATA_SM70_TABLE=1` + `STRATA_ROUTE_TAIL_SKIP=0` + `STRATA_PREFILL_CPU_SHARE=0` +
+`STRATA_PREFILL_AUTO_MAX=16384`. With a long context the GPU cache hit rate falls to ~87% and the CPU pool has real
+work again, so 12 workers decode 8% faster after an 80K prompt than 4 workers at +0.2 J/token of CPU energy;
+12 is kept for production (coding agents live in long contexts). The sleeping stager changes nothing here.
+
+**Production since 2026-10-18 15:58** (`~/.config/unbiasedstrata/config.json`, backup
+`config.json.before-v100-tuning-20261018-155758`): binary `local/bin/unbiased-strata-0.1.43.1-sm70`
+(sha256 1b90f1b6174645feda18057d377eebb547121b2e18e731599075fcba93f9e066), 12 workers, the four variables above,
+GPU boot cap 125 W. Verified live: engine 0.1.43.1, chunk 16384, 13,012 cache slots, 438 MiB VRAM free, health OK,
+the variables present in the engine process. Rollback: restore the backup config (old binary, 100 W behaviour
+needs `rm /etc/systemd/system/gpu-nv-power.service.d/override.conf`), restart the service.
+
+**Against the 2026-10-18 morning state (100 W, 0.1.39, chunk 8192):** short-prompt decode 67 -> 81 tok/s (+21%),
+decode after an 80K prompt 61 -> 79 tok/s (+30%), 80K prefill 873 -> 1180 tok/s (+35%), 80K request 95 -> 71 s,
+system energy per generated token lower at every point measured, idle CPU package 85 -> 60 W once
+`adopt/cpu-epp.service` is enabled.
+
+## Still open
+
+- Reboot for `iommu=pt` and the NVIDIA PAT module option; re-check the engine's "PCIe probe" line (13.1 GB/s today).
+- Vision: encoder helper build, front-end image support, VRAM reserve sizing (approved, after this).
+- CPU cooling: Tctl reaches the 85 C BIOS cap under any sustained all-core load (builds, long prefills) regardless
+  of worker count. A cooler or fan-curve fix is the remaining hardware item; the -20 Curve Optimizer is a
+  stability suspect for the silent power-offs.
+
 
 ## Vision (approved 2026-10-18, after the tuning lands)
 

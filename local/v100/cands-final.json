@@ -1,0 +1,6 @@
+[
+ {"name":"final","config":{"binary":"/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"},"environment":{"STRATA_SM70_TABLE":"1","STRATA_ROUTE_TAIL_SKIP":"0","STRATA_PREFILL_CPU_SHARE":"0"}},
+ {"name":"final-stagersleep","config":{"binary":"/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata"},"environment":{"STRATA_SM70_TABLE":"1","STRATA_ROUTE_TAIL_SKIP":"0","STRATA_PREFILL_CPU_SHARE":"0","STRATA_STAGER_SLEEP":"1"}},
+ {"name":"final-t12","config":{"binary":"/home/aim/opt/UnbiasedStrata/build-v100-0143/unbiased-strata","threads":12},"environment":{"STRATA_SM70_TABLE":"1","STRATA_ROUTE_TAIL_SKIP":"0","STRATA_PREFILL_CPU_SHARE":"0"}},
+ {"name":"ref-0139-t12","config":{"threads":12}}
+]
