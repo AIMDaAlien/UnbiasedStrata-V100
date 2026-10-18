@@ -1,0 +1,11 @@
+[
+ {
+  "name": "prod-final"
+ },
+ {
+  "name": "route-resident-0.5",
+  "environment": {
+   "STRATA_ROUTE_RESIDENT": "0.5"
+  }
+ }
+]

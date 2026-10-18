@@ -231,6 +231,27 @@ PR 1401 result (production config, 2 rounds): parity test 0 failures on this car
 within noise. Far from the PR's +10%: at the 125 W cap the prompt path is power-bound (~960 MHz SM), so faster
 tensor-core math buys little. Kept (free, parity-verified); `STRATA_PF_WMMA=0` restores the MMQ path.
 
+PRs 2357 (`STRATA_ARGMAX_ROWS_SM70=1`) and 2358 (`STRATA_GR_NORM_FAST=1`), both sm_70 opt-ins claiming +0.5-0.7%
+decode, merged cleanly (base 296b59d2) and go into round 5 with the model served from the unencrypted Samsung 980 PRO
+(`/mnt/samsung/strata-models/`, the per-token n-gram table reads move off the LUKS-encrypted ORICO). PRs 2355/2356
+(a second Volta prompt kernel, +2.5-4.3% prompt at 170-250 W) would conflict in 13 kernel hunks and are not taken:
+at the 125 W cap the first Volta prompt kernel already gave only +1.2%.
+
+## Round 5 at 125 W (production vision config; 2 rounds, 80K + 2 short; CPU Tctl sampled)
+
+| candidate | decode short | decode after 80K | prefill 80K | 80K wall | Tctl max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| production (0.1.43.1 + Volta table + async cache) | 85.6 | 83.8 | 1196 | 69.4 s | 85.9 C |
+| + PR 1401 prompt kernels + PRs 2357/2358 built in (`pr-all`) | 86.6 | 88.1 | **1212** | **68.3 s** | 85.9 C |
+| `pr-all` + `STRATA_ARGMAX_ROWS_SM70=1 STRATA_GR_NORM_FAST=1` | 86.5 | 91.5 | 1211 | 68.3 s | 85.9 C |
+| `pr-all`, model shards served from the Samsung 980 PRO | 86.1 | 90.4 | 1212 | 68.2 s | 85.8 C |
+
+Decode after 80K swings +-4 tok/s between identical runs (the adaptive cache's state), so the opt-ins and the SSD
+move are within noise; the prompt kernels' +1.3% prefill repeats. Start-up is 38-44 s from either drive. Adopted:
+the `pr-all` binary (`local/bin/unbiased-strata-0.1.43.1-sm70-pr1401`); the two opt-ins stay off (no measured gain,
+exact kernels kept); the model stays on the ORICO drive with the Samsung copy kept as a ready fallback. The CPU sits
+at its 85 C cap in every candidate: cooling, not software, decides that number.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at

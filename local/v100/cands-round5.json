@@ -1,0 +1,28 @@
+[
+ {
+  "name": "prod-final"
+ },
+ {
+  "name": "pr-all",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-pr1401/unbiased-strata"
+  }
+ },
+ {
+  "name": "pr-all-optins",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-pr1401/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_ARGMAX_ROWS_SM70": "1",
+   "STRATA_GR_NORM_FAST": "1"
+  }
+ },
+ {
+  "name": "pr-all-samsung",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-pr1401/unbiased-strata",
+   "model": "/mnt/samsung/strata-models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+  }
+ }
+]

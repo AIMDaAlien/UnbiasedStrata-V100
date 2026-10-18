@@ -1,0 +1,20 @@
+[
+ {
+  "name": "prod-final"
+ },
+ {
+  "name": "pr1401-wmma",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-pr1401/unbiased-strata"
+  }
+ },
+ {
+  "name": "pr1401-wmma-off",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/build-v100-pr1401/unbiased-strata"
+  },
+  "environment": {
+   "STRATA_PF_WMMA": "0"
+  }
+ }
+]

@@ -1,0 +1,17 @@
+[
+ {
+  "name": "pl125",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune pl 125"
+  ]
+ },
+ {
+  "name": "pl135",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune pl 135"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune pl 125"
+  ]
+ }
+]

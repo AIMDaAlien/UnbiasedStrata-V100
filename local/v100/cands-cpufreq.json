@@ -1,0 +1,35 @@
+[
+ {
+  "name": "maxfreq-reset",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq reset"
+  ]
+ },
+ {
+  "name": "maxfreq-4500",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq 4500"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq reset"
+  ]
+ },
+ {
+  "name": "maxfreq-4000",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq 4000"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq reset"
+  ]
+ },
+ {
+  "name": "maxfreq-3500",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq 3500"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune maxfreq reset"
+  ]
+ }
+]

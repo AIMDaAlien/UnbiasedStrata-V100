@@ -87,11 +87,22 @@ def gpu_query():
     return {'watts': w, 'sm_mhz': sm, 'mem_mhz': mem, 'temp_c': t, 'util': util, 'vram_mib': vram, 'limit_w': lim}
 
 
+K10 = next((d for d in Path('/sys/class/hwmon').glob('hwmon*') if (d / 'name').read_text().strip() == 'k10temp'), None)
+
+
+def tctl_c():
+    try:
+        return int((K10 / 'temp1_input').read_text()) / 1000.0 if K10 else None
+    except OSError:
+        return None
+
+
 def sampler(stop, samples, period=0.5):
     while not stop.is_set():
         try:
             s = gpu_query()
             s['time'] = time.time()
+            s['tctl_c'] = tctl_c()
             samples.append(s)
         except (OSError, subprocess.SubprocessError, ValueError):
             pass
@@ -122,7 +133,9 @@ def integrate(samples, t0, t1):
     for a, b in zip(pts, pts[1:]):
         joules += 0.5 * (a['watts'] + b['watts']) * (b['time'] - a['time'])
     def mean(k): return statistics.fmean(s[k] for s in pts)
+    tc = [s['tctl_c'] for s in pts if s.get('tctl_c') is not None]
     return {'gpu_joules': joules, 'gpu_watts_mean': mean('watts'), 'gpu_watts_max': max(s['watts'] for s in pts),
+            'tctl_max': max(tc) if tc else None, 'tctl_mean': (sum(tc) / len(tc)) if tc else None,
             'sm_mhz_mean': mean('sm_mhz'), 'sm_mhz_min': min(s['sm_mhz'] for s in pts),
             'temp_max': max(s['temp_c'] for s in pts), 'util_mean': mean('util'), 'samples': len(pts)}
 
@@ -310,6 +323,7 @@ def summarize(records):
             if 'secrets_ok' in q: b.setdefault('ok', []).append(q['secrets_ok'])
             if q.get('power'):
                 b['sm'].append(q['power'].get('sm_mhz_mean', 0)); b['w'].append(q['power'].get('gpu_watts_mean', 0))
+                if q['power'].get('tctl_max') is not None: b.setdefault('tctl', []).append(q['power']['tctl_max'])
     rows = []
     for (cand, kind), b in sorted(by.items()):
         med = lambda a: round(statistics.median(a), 3) if a else None
@@ -317,13 +331,14 @@ def summarize(records):
                      'decode_tps': med(b['decode']), 'prefill_tps': med(b['prefill']),
                      'gpu_J_per_tok': med(b['gpu_jpt']), 'cpu_J_per_tok': med(b['cpu_jpt']),
                      'accept': med(b['acc']), 'hit_pct': med(b['hit']), 'sm_mhz': med(b['sm']), 'gpu_w': med(b['w']),
-                     'secrets_ok': (f"{sum(b['ok'])}/{len(b['ok'])}" if b.get('ok') else None)})
+                     'secrets_ok': (f"{sum(b['ok'])}/{len(b['ok'])}" if b.get('ok') else None),
+                     'tctl_max': (round(max(b['tctl']), 1) if b.get('tctl') else None)})
     return rows
 
 
 def print_table(rows):
     cols = ['candidate', 'kind', 'n', 'wall_s', 'decode_tps', 'prefill_tps', 'gpu_J_per_tok', 'cpu_J_per_tok',
-            'accept', 'hit_pct', 'sm_mhz', 'gpu_w', 'secrets_ok']
+            'accept', 'hit_pct', 'sm_mhz', 'gpu_w', 'secrets_ok', 'tctl_max']
     print(' | '.join(cols))
     for r in rows:
         print(' | '.join(str(r.get(c)) for c in cols))
