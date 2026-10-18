@@ -6,6 +6,8 @@
 
 #include "strata/core/layout.hpp"
 #include "strata/kernels/cpu/expert.hpp"
+#include "strata/core/amd_experts.hpp"
+#include <future>
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/ple.hpp"
@@ -25,6 +27,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/prefill/moe_fused_iq_lab.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
@@ -695,7 +698,10 @@ const MmqPlan& mmq_plan() {
 // MMQ in the same buffers, so each keeps MMQ's size for stream_all_min() - 1 tokens.  `src`: the layout streams experts
 // (Prefill::init got an ExpertSource; without one no chunk takes the streamed walk, so no chunk is fused).
 bool fused_layout(size_t T, bool src) {
-    return src && fused_ring() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
+    // Mixed MMQ/FP16 layers need full-size buffers. Upstream issue #954:
+    // shrinking on `any` can overflow when a later layer falls back to FP16.
+    return src && fused_ring() && mmq_plan().any && !mmq_plan().fallback &&
+           ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
 }
 // The MoE buffers MMQ and the fused path share: GU and H in floats, Xq and Hq in bytes.  Without `fused` (the
 // default): MMQ's, for T tokens.
@@ -1549,6 +1555,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
+#ifdef STRATA_PREFILL_FUSED
+    fused::native_profile_prepare();
+#endif
     const int64_t LB = stage_lb_, LE = stage_le_;
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
@@ -1771,6 +1780,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (ps_on) m.pp->pseq_start[(size_t) l] = m.pp->pseq.size();
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
+                    if (amd_helper_ && amd_helper_->has(l, e)) continue;
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
                     int job = -1;
                     const uint8_t* b = nullptr;
@@ -2266,7 +2276,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // fused_ring() sized the ring and the buffers for it
                     const bool no_peer = !core::peer_portable();
                     const bool fused_nat = use_mmq && stream_all && no_peer && lay.native && fused::native_supported(mmq_gt, mmq_dt);
-                    const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
+                    const bool fused_l = !amd_helper_ && ((use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat);
+                    std::vector<float> amd_x, amd_rows;
+                    // Future is destroyed first on an early return, joining before
+                    // the worker's host activation/result buffers are released.
+                    std::future<std::string> amd_work;
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {
@@ -2358,6 +2372,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const bool pre_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                         std::vector<char> on_peer;
                         int64_t rows_local = T * K, rows_peer = 0;
+                        if (amd_helper_) {
+                            on_peer.assign((size_t)m.g->n_expert, 0);
+                            for (int32_t e = 0; e < m.g->n_expert; ++e)
+                                if (amd_helper_->has(l, e)) {
+                                    on_peer[(size_t)e] = 3;
+                                    rows_peer += m.cnt[(size_t)e];
+                                }
+                            rows_local -= rows_peer;
+                        }
                         if (m.pp && pre_mmq) {
                             on_peer.assign((size_t) m.g->n_expert, 0);
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
@@ -2381,7 +2404,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             for (int32_t e = 0; e < m.g->n_expert; ++e)
                                 if (on_peer.empty() || !on_peer[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             // the peer's rows in order_peer's order (peer-held, then peer-streamed): its groups need them contiguous
-                            for (int kind = 1; kind <= 2 && !on_peer.empty(); ++kind)
+                            for (int kind = 1; kind <= 3 && !on_peer.empty(); ++kind)
                                 for (int32_t e = 0; e < m.g->n_expert; ++e)
                                     if (on_peer[(size_t) e] == kind) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             m.off[(size_t) m.g->n_expert] = r;
@@ -2403,8 +2426,32 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // the experts, in id order: resident ones from VRAM, the others through the staging ring
                         std::vector<int32_t> order, order_peer;
                         for (int32_t e = 0; e < m.g->n_expert; ++e)
-                            if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || on_peer[(size_t) e] != 2))
+                            if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || (on_peer[(size_t) e] != 2 && on_peer[(size_t)e] != 3)))
                                 (!on_peer.empty() && on_peer[(size_t) e] ? order_peer : order).push_back(e);
+                        if (amd_helper_ && rows_peer > 0) {
+                            amd_x.resize((size_t)T*N);
+                            amd_rows.resize((size_t)rows_peer*N);
+                            if (cudaMemcpyAsync(amd_x.data(), m.mixed, amd_x.size()*sizeof(float),
+                                                cudaMemcpyDeviceToHost, m.cs) != cudaSuccess ||
+                                cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                                err = "AMD prefill activation copy failed"; return false;
+                            }
+                            amd_work = std::async(std::launch::async, [&, rows_local, ids_h, slot_h]() -> std::string {
+                                std::vector<float> output((size_t)amd::ENTRIES*N);
+                                std::string failure;
+                                for (int64_t b = 0; b < T; b += amd::TOKENS) {
+                                    const int64_t nt = std::min<int64_t>(amd::TOKENS, T-b);
+                                    if (!amd_helper_->begin(l, amd_x.data()+b*N, ids_h+b*K, nt, K,
+                                                            nullptr, nullptr, failure) ||
+                                        !amd_helper_->finish(output.data(), failure)) return failure;
+                                    for (int64_t i = 0; i < nt*K; ++i)
+                                        if (amd_helper_->owns(i))
+                                            std::memcpy(amd_rows.data() + ((size_t)slot_h[b*K+i]-(size_t)rows_local)*N,
+                                                        output.data()+i*N, N*sizeof(float));
+                                }
+                                return {};
+                            });
+                        }
                         for (int32_t e = 0; e < m.g->n_expert && !on_peer.empty(); ++e)   // the peer-streamed ones last:
                             if (on_peer[(size_t) e] == 2) order_peer.push_back(e);        // their copies get the most time
                         n_order = order.size();
@@ -2855,12 +2902,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                     }
                     pt.mark(kPfCombine, cs);
+                    if (amd_work.valid()) {
+                        err = amd_work.get();
+                        if (!err.empty()) return false;
+                        const size_t first = (size_t)T*K*N - amd_rows.size();
+                        if (cudaMemcpyAsync(m.Dm + first, amd_rows.data(), amd_rows.size()*sizeof(float),
+                                            cudaMemcpyHostToDevice, m.cs) != cudaSuccess) {
+                            err = "AMD prefill result copy failed"; return false;
+                        }
+                    }
                     if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
                         cudaStreamWaitEvent(m.cs, m.pp->ev_done, 0);
                         if (!m.pp->p2p)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);
                     }
                     moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                    // Pageable result buffers stay alive until every queued consumer has finished.
+                    if (!amd_rows.empty() && cudaStreamSynchronize(m.cs) != cudaSuccess) {
+                        err = "AMD prefill result synchronization failed"; return false;
+                    }
                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
                         cudaStreamSynchronize(m.cs);
@@ -2959,6 +3019,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 return false;
             }
             const auto toc2 = Clock::now();
+#ifdef STRATA_PREFILL_FUSED
+            fused::native_profile_collect();
+#endif
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
@@ -2997,6 +3060,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         return false;
     }
     stats_.ms_total += ms_since(t_start);
+#ifdef STRATA_PREFILL_FUSED
+    fused::native_profile_collect();
+#endif
     if (pt.on) {
         pt.fold();
         double total = 0.0;

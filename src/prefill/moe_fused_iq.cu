@@ -20,6 +20,8 @@
 // ldmatrix.  The products are mma.sync m16n8k32 (m16n8k16 for the formats with a scale per 16 values); the epilogues
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/prefill/moe_fused_iq_lab.hpp"
+#include "strata/prefill/moe_fused_iq_dispatch.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -34,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <vector>
 
 namespace strata::prefill::fused {
 namespace {
@@ -53,7 +56,7 @@ constexpr float MAGICF = 12582912.0f;
 // per launch by the rows per expert (pick_ww)
 constexpr int THREADS = 512;
 constexpr int WLD = 80;                 // bytes per decoded weight row of a stage: 64 int8 + 16 (no bank conflicts)
-__host__ __device__ constexpr int tile_rows(int ww) { return 256 / ww; }
+__host__ __device__ constexpr int tile_rows(int ww, int threads = THREADS) { return (threads / 32) * 16 / ww; }
 __host__ __device__ constexpr int weight_rows(int ww) { return 64 * ww; }
 constexpr int ASTAGES = 4;              // cp.async depth of the activations (64 values of K a stage)
 constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and of down (n_ff)
@@ -62,6 +65,9 @@ constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and o
 constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_S = GGML_TYPE_IQ2_S,
               T_IQ3_XXS = GGML_TYPE_IQ3_XXS, T_IQ3_S = GGML_TYPE_IQ3_S, T_IQ4_XS = GGML_TYPE_IQ4_XS,
               T_IQ4_NL = GGML_TYPE_IQ4_NL, T_Q2_0 = GGML_TYPE_Q2_0;
+static_assert(T_IQ2_XXS == 16 && T_IQ2_XS == 17 && T_IQ3_XXS == 18 && T_IQ4_NL == 20 &&
+              T_IQ3_S == 21 && T_IQ2_S == 22 && T_Q2_0 == 42,
+              "frozen expert dispatch uses these pack format ids");
 static_assert(sizeof(block_iq2_xxs) == 66 && sizeof(block_iq2_xs) == 74 && sizeof(block_iq2_s) == 82 &&
               sizeof(block_iq3_xxs) == 98 && sizeof(block_iq3_s) == 110 && sizeof(block_iq4_xs) == 136 &&
               sizeof(block_iq4_nl) == 18 && sizeof(block_q2_0) == 18, "the block layouts this file decodes");
@@ -76,9 +82,9 @@ __host__ __device__ constexpr int grid_bytes(int t) {
     return t == T_IQ2_XXS ? 256 * 8 : t == T_IQ2_XS ? 512 * 8 : t == T_IQ2_S ? 1024 * 8 : t == T_IQ3_XXS ? 256 * 4
          : t == T_IQ3_S ? 512 * 4 : 0;
 }
-__host__ __device__ constexpr size_t smem_bytes(int t, int ww) {
-    return (size_t) 2 * weight_rows(ww) * (WLD + 16) + (size_t) ASTAGES * tile_rows(ww) * AB +
-           (size_t) tile_rows(ww) * 4 + grid_bytes(t);
+__host__ __device__ constexpr size_t smem_bytes(int t, int ww, int threads = THREADS, int stages = ASTAGES) {
+    return (size_t) 2 * weight_rows(ww) * (WLD + 16) + (size_t) stages * tile_rows(ww, threads) * AB +
+           (size_t) tile_rows(ww, threads) * 4 + grid_bytes(t);
 }
 
 // moe_fused.cu's grouping tables (the same layout: fused::group writes them)
@@ -287,12 +293,12 @@ template <int T> __device__ __forceinline__ const void* grid_src() {
 // tokens' activations, SwiGLU, H to int8 per 32 features into `out`.  !GU: down rows (format WT) against H, FP32 into
 // `dm`.  Warp (wf, wt): weight rows 64 wf.. as four m16 tiles (GU: a tile = 8 features, gate rows as mma rows 0-7 and
 // up rows as 8-15, so a lane holds gate and up of one feature), routed rows 16 wt.. as two n8.
-template <int WT, bool GU, int WW>
-__global__ void __launch_bounds__(THREADS, 1)
+template <int WT, bool GU, int WW, int NT = THREADS, int AS = ASTAGES, int PREFETCH = 2>
+__global__ void __launch_bounds__(NT, 1)
 native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
               const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-    constexpr int TR = tile_rows(WW), WR = weight_rows(WW);
+    constexpr int TR = tile_rows(WW, NT), WR = weight_rows(WW);
     constexpr int WT_BYTES = WR * WLD, WS_FLOATS = WR * 4, ACT_STAGE = TR * AB;
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;   // 64-value stages along K
     constexpr int NFB = (GU ? 1280 : 2560) / WR;          // weight-row blocks per tile
@@ -302,15 +308,15 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
     extern __shared__ __align__(16) uint8_t smem[];
     uint8_t* wt = smem;                                               // [2][WR][WLD] decoded int8 weights
     float* ws = (float*) (smem + 2 * WT_BYTES);                       // [2][WR][4] their scales per 16 values
-    uint8_t* stages = (uint8_t*) (ws + 2 * WS_FLOATS);                // [ASTAGES][TR][AB] activations
-    int* srow = (int*) (stages + ASTAGES * ACT_STAGE);                // [TR] the activation row of each tile row
+    uint8_t* stages = (uint8_t*) (ws + 2 * WS_FLOATS);                // [AS][TR][AB] activations
+    int* srow = (int*) (stages + AS * ACT_STAGE);                // [TR] the activation row of each tile row
     uint8_t* sgrid = (uint8_t*) (srow + TR);                          // the codebook
 
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, tig = lane & 3;
     const int wf = warp % WW, nb0 = 16 * (warp / WW);
     if constexpr (grid_bytes(WT) > 0) {
         const uint32_t* gs = (const uint32_t*) grid_src<WT>();
-        for (int i = tid; i < grid_bytes(WT) / 4; i += THREADS) ((uint32_t*) sgrid)[i] = gs[i];
+        for (int i = tid; i < grid_bytes(WT) / 4; i += NT) ((uint32_t*) sgrid)[i] = gs[i];
     }
     uint32_t kv[4] = {0, 0, 0, 0};
     if constexpr (WT == T_IQ4_XS || WT == T_IQ4_NL) {
@@ -347,7 +353,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
         // the weight bytes into L2 ahead of the register loads (one stage ahead only - less than a DRAM round trip):
         // gate/up PF super-blocks ahead (the row's two threads take a block's first and last line), down the whole row
         // slice at once (180 or 360 bytes a row)
-        constexpr int PF = 2;
+        constexpr int PF = PREFETCH;
         auto prefetch_sb = [&](int sb) {
             if (dec && sb < GU_ROWS_K / 256) pf_l2(wrow + sb * BS + (uj ? BS - 1 : 0));
         };
@@ -363,8 +369,8 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
         // the rows past the item's end are not loaded: a warp entirely past it skips the products, and the columns
         // of a partial one are never written (no reduction mixes columns)
         auto load_act = [&](int s) {
-            uint8_t* st = stages + (s % ASTAGES) * ACT_STAGE;
-            for (int c = tid; c < TR * 5; c += THREADS) {
+            uint8_t* st = stages + (s % AS) * ACT_STAGE;
+            for (int c = tid; c < TR * 5; c += NT) {
                 const int r = c / 5, q = c % 5;
                 if (r < nrows) cp16(st + r * AB + q * 16, act + (size_t) srow[r] * ACT_LD + s * AB + q * 16);
             }
@@ -380,7 +386,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
             *(float2*) (ws + buf * WS_FLOATS + ur * 4 + 2 * uj) = make_float2(s0, s1);
         };
 #pragma unroll
-        for (int s = 0; s < ASTAGES - 1; ++s) {
+        for (int s = 0; s < AS - 1; ++s) {
             if (s < NS) load_act(s);
             cp_commit();
         }
@@ -398,15 +404,15 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #pragma unroll
                 for (int q = 0; q < 4; ++q) acc[i][n][q] = 0.0f;
         for (int s = 0; s < NS; ++s) {
-            cp_wait<ASTAGES - 2>();
+            cp_wait<AS - 2>();
             __syncthreads();
-            if (s + ASTAGES - 1 < NS) load_act(s + ASTAGES - 1);
+            if (s + AS - 1 < NS) load_act(s + AS - 1);
             cp_commit();
             if (GU && (s & 3) == 0) prefetch_sb((s >> 2) + PF);
             if (on0) {
                 const uint8_t* W = wt + (s & 1) * WT_BYTES;
                 const float* S = ws + (s & 1) * WS_FLOATS;
-                const uint8_t* sa = stages + (s % ASTAGES) * ACT_STAGE;
+                const uint8_t* sa = stages + (s % AS) * ACT_STAGE;
                 // the stage's scales: per weight row 4 (per 16 values), per routed row 2 (per 32)
                 float2 dx[2][2];                                  // [n8 tile][column 2 tig + cc]
 #pragma unroll
@@ -512,6 +518,7 @@ unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 struct DevInfo {
     bool done = false, ok = false;
     int sms = 0, occ = 1;
+    bool sm86 = false;
 };
 std::mutex g_mu;
 DevInfo g_dev[32];
@@ -545,8 +552,10 @@ const DevInfo& dev_info() {
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
 #else
-    int major = 0;
+    int major = 0, minor = 0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    d.sm86 = major == 8 && minor == 6;
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
     if (major < 8) return d;
     int occ = 1 << 20;
@@ -589,6 +598,200 @@ int pick_ww(int64_t n, int n_expert) {
     return avg > 56.0 && avg <= 112.0 ? 2 : 4;
 }
 
+
+int requested_variant() {
+    const char* v = std::getenv("STRATA_PF_NATIVE_VARIANT");
+    if (!v) return 0;
+    char* end = nullptr;
+    const long mode = std::strtol(v, &end, 10);
+    return end != v && *end == '\0' && mode >= 0 && mode <= 5 ? (int) mode : 0;
+}
+
+// Candidates are configured per actual specialization and device; the control retains its historical
+// minimum-across-formats occupancy. No failed candidate setup can affect the original dispatch.
+template <int T, bool GU, int WW, int NT, int AS, int PF>
+NativeLabInfo specialization_info() {
+    NativeLabInfo info;
+    info.phase = GU ? 1 : 2;
+    info.format = T;
+    info.tile = tile_rows(WW, NT);
+    info.weight_rows = weight_rows(WW);
+    info.threads = NT;
+    info.activation_stages = AS;
+    info.prefetch = PF;
+    info.dynamic_shared = smem_bytes(T, WW, NT, AS);
+#if !defined(STRATA_HIP_GFX906)
+    struct Cached { bool done = false; NativeLabInfo info; };
+    static Cached cache[32];
+    int dev = 0;
+    ck(cudaGetDevice(&dev), "lab device");
+    std::lock_guard<std::mutex> lk(g_mu);
+    Cached& c = cache[dev & 31];
+    if (c.done) return c.info;
+    c.done = true;
+    cudaFuncAttributes attr{};
+    auto kernel = native_kernel<T, GU, WW, NT, AS, PF>;
+    if (cudaFuncGetAttributes(&attr, kernel) == cudaSuccess && attr.ptxVersion >= 80 &&
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                             (int) info.dynamic_shared) == cudaSuccess) {
+        int occ = 0;
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ, kernel, NT, info.dynamic_shared) == cudaSuccess)
+            info.occupancy = occ;
+        info.registers = attr.numRegs;
+    }
+    cudaGetLastError(); // unavailable experimental specialization falls back to control
+    c.info = info;
+#endif
+    return info;
+}
+
+template <int T, bool GU>
+NativeLabInfo phase_info(int ww, int variant) {
+    NativeLabInfo info;
+    const DevInfo& d = dev_info();
+    if (!d.sm86 || variant < 0 || variant > 4) variant = 0;
+    int base = 2;
+    if (const char* v = std::getenv("STRATA_PF_NATIVE_BASE")) {
+        const int requested = std::atoi(v);
+        if (requested == 0 || requested == 1 || requested == 2 || (variant == 4 && requested == 3)) base = requested;
+    }
+    int prefetch_base = 2;
+    if (const char* v = std::getenv("STRATA_PF_NATIVE_PREFETCH_BASE")) {
+        const int requested = std::atoi(v);
+        if (requested >= 0 && requested <= 2) prefetch_base = requested;
+    }
+    const bool control_layout = (variant == 3 || variant == 4) &&
+                                (base == 0 || (base == 3 && prefetch_base == 0));
+    const int stages = control_layout || variant == 1 || ((variant == 3 || variant == 4) &&
+                       (base == 1 || (base == 3 && prefetch_base == 1))) ? 4 : 3;
+    const int prefetch = GU && (variant == 3 || (variant == 4 && base == 3)) ? 4 : 2;
+    if (variant != 0) {
+        if (control_layout && prefetch == 4)
+            info = ww == 4 ? specialization_info<T, GU, 4, 512, 4, 4>()
+                           : specialization_info<T, GU, 2, 512, 4, 4>();
+        else if (control_layout)
+            info = ww == 4 ? specialization_info<T, GU, 4, 512, 4, 2>()
+                           : specialization_info<T, GU, 2, 512, 4, 2>();
+        else if (stages == 4 && prefetch == 4)
+            info = ww == 4 ? specialization_info<T, GU, 2, 256, 4, 4>()
+                           : specialization_info<T, GU, 1, 256, 4, 4>();
+        else if (stages == 4)
+            info = ww == 4 ? specialization_info<T, GU, 2, 256, 4, 2>()
+                           : specialization_info<T, GU, 1, 256, 4, 2>();
+        else if (prefetch == 4)
+            info = ww == 4 ? specialization_info<T, GU, 2, 256, 3, 4>()
+                           : specialization_info<T, GU, 1, 256, 3, 4>();
+        else
+            info = ww == 4 ? specialization_info<T, GU, 2, 256, 3, 2>()
+                           : specialization_info<T, GU, 1, 256, 3, 2>();
+    }
+    if (variant == 0 || info.occupancy < 1) {
+        variant = 0;
+        info = ww == 4 ? specialization_info<T, GU, 4, 512, 4, 2>()
+                       : specialization_info<T, GU, 2, 512, 4, 2>();
+    }
+    info.variant = variant;
+    info.sms = d.sms;
+    return info;
+}
+
+template <int T, bool GU, int WW, int AS, int PF, int NT = 256>
+void launch_candidate(unsigned grid, const Batch& b, const NativeGeom& g, const Tables& tb,
+                      const void* act, const int32_t* src, void* out, float* dm, cudaStream_t stream) {
+    native_kernel<T, GU, WW, NT, AS, PF><<<grid, NT, smem_bytes(T, WW, NT, AS), stream>>>(
+        b, g, tb, (const uint8_t*) act, src, (uint8_t*) out, dm);
+}
+
+template <int T, bool GU>
+void phase_launch(const NativeLabInfo& i, const Batch& b, const NativeGeom& g, const Tables& tb,
+                  const void* act, const int32_t* src, void* out, float* dm, cudaStream_t stream) {
+    if (i.variant == 0) {
+        launch<T, GU>(i.tile == 64 ? 4 : 2, i.grid, b, g, tb, act, src, out, dm, stream);
+    } else if (i.threads == 512 && i.prefetch == 4) {
+        if (i.tile == 64) launch_candidate<T, GU, 4, 4, 4, 512>(i.grid, b, g, tb, act, src, out, dm, stream);
+        else launch_candidate<T, GU, 2, 4, 4, 512>(i.grid, b, g, tb, act, src, out, dm, stream);
+    } else if (i.threads == 512) {
+        launch<T, GU>(i.tile == 64 ? 4 : 2, i.grid, b, g, tb, act, src, out, dm, stream);
+    } else if (i.activation_stages == 4 && i.prefetch == 4) {
+        if (i.tile == 64) launch_candidate<T, GU, 2, 4, 4>(i.grid, b, g, tb, act, src, out, dm, stream);
+        else launch_candidate<T, GU, 1, 4, 4>(i.grid, b, g, tb, act, src, out, dm, stream);
+    } else if (i.activation_stages == 4) {
+        if (i.tile == 64) launch_candidate<T, GU, 2, 4, 2>(i.grid, b, g, tb, act, src, out, dm, stream);
+        else launch_candidate<T, GU, 1, 4, 2>(i.grid, b, g, tb, act, src, out, dm, stream);
+    } else if (i.prefetch == 4) {
+        if (i.tile == 64) launch_candidate<T, GU, 2, 3, 4>(i.grid, b, g, tb, act, src, out, dm, stream);
+        else launch_candidate<T, GU, 1, 3, 4>(i.grid, b, g, tb, act, src, out, dm, stream);
+    } else {
+        if (i.tile == 64) launch_candidate<T, GU, 2, 3, 2>(i.grid, b, g, tb, act, src, out, dm, stream);
+        else launch_candidate<T, GU, 1, 3, 2>(i.grid, b, g, tb, act, src, out, dm, stream);
+    }
+}
+
+struct ProfileRecord {
+    cudaEvent_t begin{}, end{}, ready{};
+    int32_t* counts = nullptr;
+    NativeLabInfo info;
+    int e0 = 0, e1 = 0, n_expert = 0;
+    int64_t rows = 0;
+};
+std::mutex g_profile_mu;
+std::vector<ProfileRecord> g_profile;
+constexpr size_t PROFILE_RECORD_CAPACITY = 65536;
+constexpr size_t PROFILE_COUNT_CAPACITY = PROFILE_RECORD_CAPACITY * 512; // diagnostic-only pinned pool
+std::vector<ProfileRecord> g_profile_slots;
+size_t g_profile_slot_used = 0;
+int32_t* g_profile_counts = nullptr;
+size_t g_profile_count_used = 0;
+
+bool profiling_requested() {
+    const char* v = std::getenv("STRATA_PF_NATIVE_PROFILE");
+    return v && v[0] == '1';
+}
+
+void dispatch_phase(const NativeLabInfo& info, const Batch& b, const NativeGeom& g, int n_expert, int64_t n,
+                    const Tables& tb, const void* xa, const int32_t* src, void* ha, float* dm, cudaStream_t stream) {
+    const bool profile = profiling_requested();
+    ProfileRecord record;
+    if (profile) {
+        record.info = info;
+        record.e0 = b.e0; record.e1 = b.e1; record.n_expert = n_expert; record.rows = n;
+        {
+            std::lock_guard<std::mutex> lk(g_profile_mu);
+            if (!g_profile_counts || g_profile_slot_used >= PROFILE_RECORD_CAPACITY ||
+                g_profile_count_used + (size_t) (b.e1 - b.e0) > PROFILE_COUNT_CAPACITY) {
+                std::fprintf(stderr, "native expert profiling pool unavailable/exhausted; call native_profile_prepare before prefill and collect after existing synchronization\n");
+                std::exit(1);
+            }
+            const ProfileRecord& slot = g_profile_slots[g_profile_slot_used++];
+            record.begin = slot.begin; record.end = slot.end; record.ready = slot.ready;
+            record.counts = g_profile_counts + g_profile_count_used;
+            g_profile_count_used += b.e1 - b.e0;
+        }
+        ck(cudaEventRecord(record.begin, stream), "profile begin record");
+    }
+    if (info.phase == 1) {
+        switch (g.gu_type) {
+            case T_IQ2_XXS: phase_launch<T_IQ2_XXS, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+            case T_IQ2_XS: phase_launch<T_IQ2_XS, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+            case T_IQ2_S: phase_launch<T_IQ2_S, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+            case T_IQ3_XXS: phase_launch<T_IQ3_XXS, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+            case T_IQ3_S: phase_launch<T_IQ3_S, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+            default: phase_launch<T_IQ4_XS, true>(info, b, g, tb, xa, src, ha, nullptr, stream); break;
+        }
+    } else {
+        if (g.d_type == T_Q2_0) phase_launch<T_Q2_0, false>(info, b, g, tb, ha, src, nullptr, dm, stream);
+        else phase_launch<T_IQ4_NL, false>(info, b, g, tb, ha, src, nullptr, dm, stream);
+    }
+    if (profile) {
+        ck(cudaEventRecord(record.end, stream), "profile end record");
+        ck(cudaMemcpyAsync(record.counts, tb.cnt + b.e0, (size_t) (b.e1 - b.e0) * sizeof(int32_t),
+                           cudaMemcpyDeviceToHost, stream), "profile counts copy");
+        ck(cudaEventRecord(record.ready, stream), "profile ready record");
+        std::lock_guard<std::mutex> lk(g_profile_mu);
+        g_profile.push_back(record);
+    }
+}
+
 }  // namespace
 
 bool native_supported(int gu_type, int d_type) {
@@ -596,7 +799,9 @@ bool native_supported(int gu_type, int d_type) {
         const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
         return v != nullptr && v[0] == '0';
     }();
-    return !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;   // opt-in (=1)
+    const bool supported = !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;
+    if (supported && profiling_requested()) native_profile_prepare();
+    return supported;   // opt-in (=1)
 }
 
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream) {
@@ -606,7 +811,58 @@ void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, v
     ck(cudaGetLastError(), "quantize_act_native");
 }
 
-void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
+
+NativeLabInfo native_lab_info(const Batch& b, const NativeGeom& g, int n_expert, int64_t n,
+                              int phase, int variant, int tile) {
+    const int ww = tile == 64 ? 4 : tile == 128 ? 2 : pick_ww(n, n_expert);
+    const int requested = variant;
+    if (variant == 5) {
+        const int64_t experts = std::max(n_expert, 1);
+        const int row_class = n <= 56 * experts ? 0 : n <= 112 * experts ? 1 : 2;
+        variant = dev_info().sm86 ? native_lab_dispatch::mode(phase, phase == 1 ? g.gu_type : g.d_type, row_class) : 0;
+    }
+    NativeLabInfo info;
+    if (phase == 1) {
+        switch (g.gu_type) {
+            case T_IQ2_XXS: info = phase_info<T_IQ2_XXS, true>(ww, variant); break;
+            case T_IQ2_XS: info = phase_info<T_IQ2_XS, true>(ww, variant); break;
+            case T_IQ2_S: info = phase_info<T_IQ2_S, true>(ww, variant); break;
+            case T_IQ3_XXS: info = phase_info<T_IQ3_XXS, true>(ww, variant); break;
+            case T_IQ3_S: info = phase_info<T_IQ3_S, true>(ww, variant); break;
+            default: info = phase_info<T_IQ4_XS, true>(ww, variant); break;
+        }
+    } else {
+        info = g.d_type == T_Q2_0 ? phase_info<T_Q2_0, false>(ww, variant)
+                                 : phase_info<T_IQ4_NL, false>(ww, variant);
+    }
+    info.requested_variant = requested;
+    const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
+    const int occ = info.variant ? info.occupancy : dev_info().occ;
+    const int multiple = info.variant == 4 ? 2 : 1;
+    info.grid = (unsigned) std::min<int64_t>(tiles * ((phase == 1 ? 1280 : 2560) / info.weight_rows),
+                                           (int64_t) info.sms * occ * multiple);
+    return info;
+}
+
+void experts_native_lab(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch,
+                        const void* xa, const int32_t* src, void* ha, float* dm, void* stream,
+                        int phase, int variant, int tile) {
+    if (b.e1 <= b.e0 || n <= 0) return;
+    if (!dev_info().ok || !gu_covered(g.gu_type) || !d_covered(g.d_type) || phase < 0 || phase > 2) {
+        std::fprintf(stderr, "prefill fused experts (native): types %d / %d or phase %d are not covered here\n",
+                     g.gu_type, g.d_type, phase);
+        std::exit(1);
+    }
+    const Tables tb = tables(const_cast<void*>(scratch), n_expert);
+    const cudaStream_t s = (cudaStream_t) stream;
+    if (phase != 2) dispatch_phase(native_lab_info(b, g, n_expert, n, 1, variant, tile),
+                                  b, g, n_expert, n, tb, xa, src, ha, dm, s);
+    if (phase != 1) dispatch_phase(native_lab_info(b, g, n_expert, n, 2, variant, tile),
+                                  b, g, n_expert, n, tb, xa, src, ha, dm, s);
+    ck(cudaGetLastError(), "experts_native");
+}
+
+static void experts_native_control(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
                     const int32_t* src, void* ha, float* dm, void* stream) {
     if (b.e1 <= b.e0 || n <= 0) return;
     const DevInfo& d = dev_info();
@@ -633,6 +889,69 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     ck(cudaGetLastError(), "experts_native");
+}
+
+
+void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
+                    const int32_t* src, void* ha, float* dm, void* stream) {
+    const int variant = requested_variant();
+    if (variant == 0 && !profiling_requested()) {
+        experts_native_control(b, g, n_expert, n, scratch, xa, src, ha, dm, stream);
+        return;
+    }
+    experts_native_lab(b, g, n_expert, n, scratch, xa, src, ha, dm, stream, 0, variant);
+}
+
+void native_profile_prepare() {
+    if (!profiling_requested()) return;
+    std::lock_guard<std::mutex> lk(g_profile_mu);
+    if (g_profile_counts) return;
+    ck(cudaMallocHost((void**) &g_profile_counts, PROFILE_COUNT_CAPACITY * sizeof(int32_t)), "profile pool allocate");
+    g_profile_slots.resize(PROFILE_RECORD_CAPACITY);
+    g_profile.reserve(PROFILE_RECORD_CAPACITY);
+    for (ProfileRecord& slot : g_profile_slots) {
+        ck(cudaEventCreate(&slot.begin), "profile begin create");
+        ck(cudaEventCreate(&slot.end), "profile end create");
+        ck(cudaEventCreateWithFlags(&slot.ready, cudaEventDisableTiming), "profile ready create");
+    }
+}
+
+void native_profile_collect() {
+    std::lock_guard<std::mutex> lk(g_profile_mu);
+    auto it = g_profile.begin();
+    while (it != g_profile.end()) {
+        const cudaError_t status = cudaEventQuery(it->ready);
+        if (status == cudaErrorNotReady) break;
+        ck(status, "profile query");
+        float ms = 0.0f;
+        ck(cudaEventElapsedTime(&ms, it->begin, it->end), "profile elapsed");
+        const NativeLabInfo& i = it->info;
+        int histogram[4] = {0, 0, 0, 0};
+        int64_t routed = 0, tile_count = 0, partial_tiles = 0;
+        for (int e = 0; e < it->e1 - it->e0; ++e) {
+            const int rows = it->counts[e];
+            ++histogram[rows == 0 ? 0 : rows < 64 ? 1 : rows < 128 ? 2 : 3];
+            routed += rows;
+            tile_count += (rows + i.tile - 1) / i.tile;
+            partial_tiles += rows % i.tile != 0;
+        }
+        std::fprintf(stderr, "native_expert_profile {\"phase\":\"%s\",\"format\":%d,\"requested_variant\":%d,\"variant\":%d,"
+                     "\"tile\":%d,\"weight_rows\":%d,\"threads\":%d,\"stages\":%d,\"prefetch\":%d,"
+                     "\"grid\":%u,\"registers\":%d,\"dynamic_shared\":%zu,\"occupancy\":%d,"
+                     "\"batch_start\":%d,\"batch_experts\":%d,\"total_experts\":%d,\"total_routed_rows\":%lld,"
+                     "\"batch_routed_rows\":%lld,\"tile_count\":%lld,\"partial_tiles\":%lld,"
+                     "\"row_histogram_0_1to63_64to127_128plus\":[%d,%d,%d,%d],\"elapsed_ms\":%.6f,\"expert_rows\":[",
+                     i.phase == 1 ? "gate_up_epilogue" : "down", i.format, i.requested_variant, i.variant, i.tile, i.weight_rows,
+                     i.threads, i.activation_stages, i.prefetch, i.grid, i.registers, i.dynamic_shared, i.occupancy,
+                     it->e0, it->e1 - it->e0, it->n_expert, (long long) it->rows, (long long) routed,
+                     (long long) tile_count, (long long) partial_tiles,
+                     histogram[0], histogram[1], histogram[2], histogram[3], ms);
+        for (int e = 0; e < it->e1 - it->e0; ++e) std::fprintf(stderr, "%s%d", e ? "," : "", it->counts[e]);
+        std::fprintf(stderr, "]}\n");
+        ++it;
+    }
+    g_profile.erase(g_profile.begin(), it);
+    if (g_profile.empty()) { g_profile_count_used = 0; g_profile_slot_used = 0; }
 }
 
 }  // namespace strata::prefill::fused

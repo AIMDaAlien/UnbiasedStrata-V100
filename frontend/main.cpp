@@ -73,7 +73,7 @@ struct GenResult {
     bool ok = false;
     std::string error;
     std::string finish = "length";
-    long long produced = 0, prompt_n = 0, draft_accepted = 0, draft_offered = 0;
+    long long produced = 0, prompt_n = 0, draft_accepted = 0, draft_offered = 0, reused = 0;
     double prompt_ms = 0, decode_ms = 0;
 };
 
@@ -145,7 +145,8 @@ public:
                 r.error = line.size() > 4 ? line.substr(4) : "the engine reported an error";
                 return r;
             }
-            // PP (prompt progress), RESUME, REUSED and INFO lines need no action here
+            else if (line.rfind("REUSED ", 0) == 0) r.reused = std::atoll(line.c_str() + 7);
+            // PP (prompt progress), RESUME and INFO lines need no action here
         }
         alive_ = false;
         r.error = "the engine exited during the request";
@@ -251,7 +252,7 @@ struct Server {
     common_chat_templates_ptr tmpls;
 
     /// Parses an OpenAI chat request, renders the model's chat template and tokenizes the result.
-    bool prepare(const common_json& body, Prepared& p, std::string& err) {
+    bool prepare(const common_json& body, Prepared& p, std::string& err, bool count_only = false) {
         if (!body.is_object() || !body.contains("messages")) { err = "the request needs a \"messages\" array"; return false; }
         common_chat_templates_inputs in;
         in.messages = common_chat_msgs_parse_oaicompat(body.at("messages"));
@@ -281,6 +282,9 @@ struct Server {
         const common_chat_params cp = common_chat_templates_apply(tmpls.get(), in);
         p.ids = common_tokenize(vocab, cp.prompt, /*add_special=*/false, /*parse_special=*/true);
         if (p.ids.empty()) { err = "the prompt is empty"; return false; }
+        // Benchmark fixture construction may probe above the model's context limit.
+        // It needs the exact chat-template token count without preparing inference.
+        if (count_only) return true;
 
         p.parser = common_chat_parser_params(cp);
         p.parser.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -346,6 +350,7 @@ struct Server {
     common_json timings_json(const GenResult& r) const {
         common_json t = common_json::object();
         t["prompt_n"] = r.prompt_n;
+        t["prompt_cached_n"] = r.reused;
         t["prompt_ms"] = r.prompt_ms;
         t["prompt_per_second"] = r.prompt_ms > 0 ? 1000.0 * (double) r.prompt_n / r.prompt_ms : 0.0;
         t["predicted_n"] = r.produced;
@@ -530,6 +535,9 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--port") o.port = std::atoi(next("--port").c_str());
         else if (a == "--ctx") o.ctx = std::atoll(next("--ctx").c_str());
         else if (a == "--threads") o.threads = std::atoi(next("--threads").c_str());
+        else if (a == "--amd-helper" || a == "--amd-device" || a == "--amd-vram-mib") {
+            o.extra.push_back(a); o.extra.push_back(next(a.c_str()));
+        }
         else if (a == "--") {
             for (++i; i < argc; ++i) {
                 const std::string e = argv[i];
@@ -626,6 +634,22 @@ int main(int argc, char** argv) {
     });
     http.Post("/v1/chat/completions", [&](const httplib::Request& req, httplib::Response& res) {
         srv.handle_chat(req, res);
+    });
+    // Count the actual inference prompt, including chat-template overhead.
+    http.Post("/tokenize", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            Prepared p;
+            std::string error;
+            if (!srv.prepare(common_json::parse(req.body), p, error, true)) {
+                res.status = 400;
+                res.set_content(common_json{{"error", error}}.dump_safe(), "application/json");
+                return;
+            }
+            res.set_content(common_json{{"count", p.ids.size()}}.dump_safe(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(common_json{{"error", e.what()}}.dump_safe(), "application/json");
+        }
     });
     http.set_read_timeout(600, 0);
     http.set_write_timeout(600, 0);

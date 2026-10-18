@@ -38,11 +38,12 @@ struct PrefillStats {
 };
 
 }  // namespace strata::prefill
-namespace strata::core { class MtpDrafter; }
+namespace strata::core { class MtpDrafter; class AmdExperts; }
 namespace strata::prefill {
 
 class Prefill {
 public:
+    void set_amd(core::AmdExperts* helper) { amd_helper_ = helper; }
     /// E-9: the draft layer's K/V for prompt cells [cell0, cell0 + n) from their final residual rows `R_rows`
     /// (device) and `next_tokens` (host: the token at cell+1), in batches through this path's GEMMs and its idle
     /// scratch - call it from on_chunk.  false with `err` empty: not applicable here (a ring or hybrid K/V, another
@@ -158,6 +159,7 @@ public:
     bool set_stage_helper(Prefill* helper, std::string& err);
 
 private:
+    core::AmdExperts* amd_helper_ = nullptr;
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);

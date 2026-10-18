@@ -1437,7 +1437,9 @@ bool FileExpertSource::pin_cache_complement(
         lend_from_slot = -1;
     }
 
-    const bool lend = lend_from_slot >= 0 && lend_from_slot < n_slots && additional_gpu_pairs.empty();
+    // Additional GPU ownership is disjoint from the primary. Its presence must
+    // not discard the RAM backing of primary slots borrowed during prefill.
+    const bool lend = lend_from_slot >= 0 && lend_from_slot < n_slots;
     uint64_t budget = std::numeric_limits<uint64_t>::max();
     if (bytes > 0 || lend) {
         // #403: with a budget, the reading it was sized from - a second reading a few MB lower (the engine's own
@@ -1916,6 +1918,12 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
             d.fail_layer = d.layers;
             d.fail_expert = e;
             return;
+        }
+        bool helper_owns = false;
+        for (int r = 0; r < d.remote_count; ++r) helper_owns |= d.remote[r]->owns(i);
+        if (helper_owns) {
+            std::memset(out + (size_t)i * (size_t)n_embd, 0, (size_t)n_embd * sizeof(float));
+            continue;
         }
         const uint8_t* b = d.src->blob(d.layers, e);
         if (b == nullptr) {

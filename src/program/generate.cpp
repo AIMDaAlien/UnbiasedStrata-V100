@@ -23,6 +23,8 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/amd_experts.hpp"
+#include "strata/prefill/moe_fused.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/layer.hpp"
@@ -372,6 +374,9 @@ struct Options {
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::array<bool, 3> expert_cache_remote_auto{};
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
+    std::string amd_helper, amd_device;
+    bool amd_decode_only = false;
+    int amd_vram_mib = 12288;
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
@@ -1373,6 +1378,10 @@ int main(int argc, char** argv) {
             o.expert_cache_remote[r] = v == "auto" ? std::numeric_limits<int>::max() : std::atoi(v.c_str());
         }
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
+        else if (a == "--amd-helper") o.amd_helper = next("--amd-helper");
+        else if (a == "--amd-decode-only") o.amd_decode_only = true;
+        else if (a == "--amd-device") o.amd_device = next("--amd-device");
+        else if (a == "--amd-vram-mib") o.amd_vram_mib = std::atoi(next("--amd-vram-mib"));
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
@@ -3552,6 +3561,27 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
+    strata::core::AmdExperts amd_helper;
+    if (o.amd_decode_only && o.amd_helper.empty()) {
+        std::fprintf(stderr, "strata: --amd-decode-only requires --amd-helper\n"); return 2;
+    }
+    if (!o.amd_helper.empty() && !o.amd_decode_only &&
+        strata::prefill::fused::requested()) {
+        std::fprintf(stderr, "strata: fused prefill with AMD requires --amd-decode-only\n"); return 2;
+    }
+    if (!o.amd_helper.empty()) {
+        if (!o.layer_split.empty() || o.peer_device >= 1 || o.expert_cache_remote[0] > 0 ||
+            o.amd_vram_mib < 1 || o.amd_vram_mib > 12288 || !srcp || profile.empty() || o.no_pool) {
+            std::fprintf(stderr, "strata: AMD helper needs the single NVIDIA/native expert path and 1..12288 MiB budget\n");
+            return 2;
+        }
+        if (!amd_helper.open_worker(o.amd_helper, o.amd_device, (uint64_t)o.amd_vram_mib << 20,
+                                    profile, xcache, *srcp, err)) {
+            std::fprintf(stderr, "strata: %s\n", err.c_str()); return 1;
+        }
+        std::fprintf(stderr, "strata AMD helper mode: %s\n",
+                     o.amd_decode_only ? "decode-only; NVIDIA prefill retains every expert" : "prefill and decode");
+    }
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
     if (o.remote_expert_opt && o.expert_cache_remote[0] > 0) remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
@@ -3660,6 +3690,7 @@ int main(int argc, char** argv) {
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
+    if (!o.amd_helper.empty()) drive.d.remote[drive.d.remote_count++] = &amd_helper;
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
     drive.d.peer = peer.valid() ? &peer : nullptr;
@@ -4544,7 +4575,12 @@ int main(int argc, char** argv) {
             const int64_t k = plan_lend(chunk);
             if (k > 0) lend_from = xcache.slots() - k;
         }
-        bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, {}, lend_from, o.resident_headroom,
+        // Decode-only AMD owns disjoint decode experts, but NVIDIA prefill must
+        // still stream every expert. Keep the AMD pairs in the pinned host
+        // complement so fused prefill has a complete, stable expert source.
+        const std::vector<std::pair<int32_t, int32_t>> no_prefill_remote;
+        const auto& prefill_remote = o.amd_decode_only ? no_prefill_remote : amd_helper.pairs();
+        bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, prefill_remote, lend_from, o.resident_headroom,
                                                     o.resident_budget, &profile);
         std::string whole_err;
         if (!resident_ok && o.resident_soft) {
@@ -4552,7 +4588,7 @@ int main(int argc, char** argv) {
             // budget path (sized by the RAM alone) instead of none: the misses outside it read the same file bytes
             // the mmap fallback reads, so the answers are unchanged.  Nothing pinned: the old fallback below.
             whole_err = err;
-            resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, {}, -1, o.resident_headroom,
+            resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, prefill_remote, -1, o.resident_headroom,
                                                    strata::core::FileExpertSource::kResidentWhatFits, &profile);
             if (resident_ok)
                 std::fprintf(stderr, "strata generate: WARNING: the whole resident RAM mode does not fit (%s); %.2f "
@@ -4986,6 +5022,7 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
+        if (!o.amd_helper.empty() && !o.amd_decode_only) sp.set_amd(&amd_helper);
         if (peer.valid() && o.peer_prefill_rows != 0) {
             const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
             if (!sp.set_peer(&peer, rows, err)) {
@@ -5500,7 +5537,7 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e))) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) { if (u[e] >= 2.0f && !amd_helper.has(l, e) && !(peer.valid() && peer.has(l, e)) && !(remote_opt && remote_opt->owns(l, e))) cand.emplace_back(u[e], e); }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;
@@ -6401,6 +6438,9 @@ int main(int argc, char** argv) {
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
             std::array<double, 3> begin_before{}, wait_before{};
+            const double amd_transfer_before = amd_helper.transfer_ms, amd_wait_before = amd_helper.wait_ms;
+            const double amd_device_transfer_before = amd_helper.device_transfer_ms, amd_compute_before = amd_helper.device_compute_ms;
+            const uint64_t amd_bytes_before = amd_helper.transferred, amd_fallback_before = amd_helper.fallback_rows;
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
             {
                 remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
@@ -7452,6 +7492,12 @@ int main(int argc, char** argv) {
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);
+            if (!o.amd_helper.empty())
+                std::fprintf(stderr, "strata serve: AMD helper: transfer_ms=%.3f wait_ms=%.3f bytes=%llu fallback_rows=%llu device_transfer_ms=%.3f device_compute_ms=%.3f\n",
+                    amd_helper.transfer_ms-amd_transfer_before, amd_helper.wait_ms-amd_wait_before,
+                    (unsigned long long)(amd_helper.transferred-amd_bytes_before),
+                    (unsigned long long)(amd_helper.fallback_rows-amd_fallback_before),
+                    amd_helper.device_transfer_ms-amd_device_transfer_before, amd_helper.device_compute_ms-amd_compute_before);
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
                 std::fprintf(stderr, "strata serve: CUDA%d: %lld expert entries, %lld active layer launches, %.1f MiB returned "
                                      "(%.1f MiB with full rows) in this request; host %.0f ms staging+launching, %.0f ms "
@@ -7918,7 +7964,7 @@ int main(int argc, char** argv) {
                 const float* u = drive.d.usage.data() + l * g.n_expert;
                 const int32_t* r = host_res.data() + l * g.n_expert;
                 for (int32_t e = 0; e < (int32_t) g.n_expert; ++e) {
-                    if (r[e] < 0) { if (u[e] >= 2.0f) cand.emplace_back(u[e], e); }
+                    if (r[e] < 0) { if (u[e] >= 2.0f && !amd_helper.has(l, e)) cand.emplace_back(u[e], e); }
                     else vict.emplace_back(u[e], e);
                 }
                 if (cand.empty() || vict.empty()) continue;

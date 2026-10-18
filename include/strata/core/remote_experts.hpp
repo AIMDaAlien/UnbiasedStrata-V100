@@ -18,7 +18,7 @@ class RemoteExpertOpt;
 class RemoteExperts {
 public:
     RemoteExperts() = default;
-    ~RemoteExperts();
+    virtual ~RemoteExperts();
     RemoteExperts(const RemoteExperts&) = delete;
     RemoteExperts& operator=(const RemoteExperts&) = delete;
 
@@ -33,12 +33,12 @@ public:
 
     /// `kind` is the primary verifier's classification (-1 = CPU candidate),
     /// or null on the one-token path. Entries already served on CUDA0 are excluded.
-    bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
+    virtual bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                int64_t k, const int32_t* kind, const int32_t* primary_res,
                std::string& err);
-    bool owns(int64_t index) const { return owned_[(size_t) index] != 0; }
+    virtual bool owns(int64_t index) const { return owned_[(size_t) index] != 0; }
     bool optimized_decode() const { return remote_opt_ != nullptr; }
-    bool finish(float* out, std::string& err);
+    virtual bool finish(float* out, std::string& err);
     int64_t resident() const { return cache_.resident(); }
     int64_t computed() const { return computed_; }
     int64_t launched_layers() const { return launched_layers_; }

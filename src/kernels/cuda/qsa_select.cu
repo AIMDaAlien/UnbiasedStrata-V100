@@ -1217,6 +1217,18 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         qsa_block_topk_ref(scores, steps, nq, max_blocks, cap, s, ids, stream);
         return;
     }
+    // Optional experiment evidence: one record for each dispatch category, outside timed screens.
+    static const bool trace = std::getenv("STRATA_TOPK_TRACE") != nullptr;
+    if (trace) {
+        static bool seen[4] = {};
+        const int category = (counted ? 2 : 0) + (reach > fit ? 1 : 0);
+        if (!seen[category]) {
+            seen[category] = true;
+            std::fprintf(stderr, "strata topk dispatch: counted=%d reach=%lld capacity_blocks=%lld active_blocks=%lld kernel=%s\n",
+                (int)counted, (long long)reach, (long long)max_blocks, (long long)active_blocks,
+                reach > fit ? "wide" : "register");
+        }
+    }
     if (s.idx_block != R || cap < qsa_selection_width(kTopkMaxCells, s)) {
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
