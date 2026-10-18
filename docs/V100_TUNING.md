@@ -182,6 +182,42 @@ Reserve 1600 was an OOM at the first verify window (74 MiB free); production use
 read-back (511x1376 terminal UI): title, selected entry and all four file names exact at both 1024 and 2048 image
 tokens (the picture is ~720 tokens, under both caps); one of two IP ports missed. Eight synthetic end-to-end checks pass.
 
+## Round 2 at 125 W (final text config, 12 workers; 2 rounds, 80K + 2 short)
+
+| candidate | decode short | decode after 80K | prefill 80K | GPU J/tok | gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| final (reference) | 80.9 | 82.0 | 1185 | 1.96 | 2/2 |
+| `--adapt-async 1` | **85.5** | **89.5** | 1184 | **1.84** | 2/2 |
+| `STRATA_PREFILL_AUTO_MAX=32768` | 82.5 | 83.6 | **1204** | 1.96 | 2/2 |
+| `--adapt-every 2` | 84.8 | 78.1 | 1183 | 1.90 | 2/2 |
+| `--adapt-swaps 192` | 81.1 | 77.2 | 1183 | 1.88 | 2/2 |
+| `--ple-row-cache 4194304` | 80.6 | 81.3 | 1182 | 1.98 | 2/2 |
+
+The async adaptive tier (opt-in in 0.1.43.1; upstream: answers can differ slightly from the blocking tier) is +6-9%
+decode at lower energy; the 32K chunk ceiling +1.6% prefill. Both go to a round-3 acceptance on the production
+vision configuration plus the 24-task suite before adoption. Swap/adaptation rates and the n-gram row cache: flat.
+
+## Round 3 acceptance on the production vision configuration, and the switch (2026-10-18 evening)
+
+| | production vision config | + `--adapt-async 1` + chunk ceiling 32768 |
+| --- | ---: | ---: |
+| decode short / after 80K | 78.5 / 82.7 tok/s | **86.4 / 89.6** tok/s |
+| 80K prefill | 1182 tok/s | 1200 tok/s |
+| GPU J/token (short) | 1.90 | 1.85 |
+| correctness gate | 2/2 | 2/2 |
+| 24-task suite: median wall / total / passes | 32.6 s / 954 s / 23 | **29.6 s / 874 s / 23** |
+
+The task suite on the candidate: median task wall 29.6 s (Oct 13 at 250 W: 37.2 s), median decode 92.5 tok/s, 23/24
+passes with one task flipping each way (e11 now passes, e13 now fails; both were "varies between repeats" tasks in
+the Oct 13 three-seed campaign). Adopted. **Production since 18:3x:** the vision binary, Q8_0 encoder at 2048 image
+tokens, `--vram-reserve-mib 2400 --adapt-async 1`, `STRATA_PREFILL_AUTO_MAX=32768`, plus the earlier variables;
+backup `config.json.before-vision-async-*`. Live checks: health, eight image tests, variables and flags in the engine
+process, 125 W cap.
+
+**Against the morning (100 W, 0.1.39, chunk 8192):** short decode 67 -> 86 tok/s (+29%), decode after 80K 61 -> 90
+(+47%), 80K prefill 873 -> 1200 (+37%), 80K request 95 -> 69 s, task-suite median 37.2 s (at 250 W!) -> 29.6 s,
+with the vision encoder loaded and lower energy per token.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at

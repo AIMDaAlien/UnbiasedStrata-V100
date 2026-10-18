@@ -1,0 +1,19 @@
+[
+ {
+  "name": "prod-vision"
+ },
+ {
+  "name": "prod-vision-async32k",
+  "environment": {
+   "STRATA_PREFILL_AUTO_MAX": "32768"
+  },
+  "config": {
+   "engine_args": [
+    "--vram-reserve-mib",
+    "2400",
+    "--adapt-async",
+    "1"
+   ]
+  }
+ }
+]
