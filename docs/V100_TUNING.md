@@ -318,6 +318,40 @@ Result files: `bench/results/v100-routeres-0.5.json` vs `v100-after-tuning-async
 Binary `local/bin/unbiased-strata-0.1.43.1-sm70-pr1401` (pr-all, switched 21:31, health + eight image tests pass),
 135 W (after the soak), CPU boost capped at 4500 MHz, everything else as in round 3. Window script: `local/v100/window6.sh`.
 
+## Round 7 at 135 W: what is left before the BIOS (production pr-all binary, CPU capped 4.5 GHz)
+
+Levers checked and closed without a run: transparent huge pages are already `always` (37 of the engine's 46 GB
+resident as huge pages); `--suffix-draft` (prompt-lookup drafting) is the engine default; `--kv k8v4` cannot stream,
+so it would put the whole 196K KV back into VRAM and cost expert slots; PCIe is at the Gen3 x16 limit, HBM2 is
+fixed-clock, EPP was within 0.5 tok/s. Driver note: stay on 580 / CUDA 12 (CUDA 13 dropped Volta).
+
+### GPU clock ceiling (`-lgc 135,MAX`, aimed at the power transients, 1 round)
+
+| ceiling | decode short | decode after 80K | prefill 80K | GPU peak sample | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| none (1380) | 87.9 | 90.4 | 1298 | 210 W | 197 W |
+| 1200 MHz | 84.7 | 86.0 | 1299 | 211 W | 202 W |
+| 1100 MHz | 79.9 | 81.1 | 1294 | 216 W | 204 W |
+
+The ceiling costs decode (short prompts run at 1300-1340 MHz when unlocked) and does not clip the transients: the
+peaks are the load burst itself, not the clock. Dead end on both counts; clocks stay unlocked.
+
+### CCD affinity, 16 workers, draft length 5 (2 rounds, 80K + 2 short, 135 W)
+
+| candidate | decode short | decode after 80K | prefill 80K | 80K wall | CPU J/tok (80K) | GPU hit % |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| production (12 workers, draft 4, unpinned) | 87.9 | 90.7 | 1293 | 63.9 s | 19.7 | 80.8 |
+| pinned to CCD0 (cores 0-7 + SMT 16-23) | 86.6 | **83.9** | 1294 | 64.1 s | 19.6 | 81.5 |
+| 16 workers | 85.3 | 91.2 | 1292 | 64.3 s | 16.9 | 82.8 |
+| draft length 5 | 81.6 | 88.2 | 1292 | 64.2 s | 18.4 | 80.6 |
+
+Pinning the engine to one chiplet costs 7% decode after a long prompt: the expert streaming path wants both L3s.
+(First attempt note: `AllowedCPUs=` on a user unit is silently inert here, the session has no cpuset controller
+delegated; the harness now pins with a `taskset` prefix, profile key `cpu_affinity`, and verifies through
+`/proc/PID/status`.) 16 workers trades 3% short-prompt decode for 14% less CPU energy after long prompts, a wash;
+draft 5 lowers acceptance (0.65 vs 0.70) and loses on both. Nothing adopted; the shortlist before the BIOS is
+exhausted. Production stays: pr-all binary, 135 W, 12 workers, draft 4, unpinned, CPU capped 4.5 GHz.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at

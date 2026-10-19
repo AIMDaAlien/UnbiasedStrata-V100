@@ -1,0 +1,23 @@
+[
+ {
+  "name": "prod-135"
+ },
+ {
+  "name": "ccd0-affinity",
+  "config": {
+   "cpu_affinity": "0-7,16-23"
+  }
+ },
+ {
+  "name": "workers-16",
+  "config": {
+   "threads": 16
+  }
+ },
+ {
+  "name": "spec-5",
+  "config": {
+   "spec": 5
+  }
+ }
+]

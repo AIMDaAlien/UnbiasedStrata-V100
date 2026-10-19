@@ -1,0 +1,41 @@
+[
+ {
+  "name": "prod-135"
+ },
+ {
+  "name": "gpu-ceiling-1200",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune lgc 135 1200"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune rgc"
+  ]
+ },
+ {
+  "name": "gpu-ceiling-1100",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune lgc 135 1100"
+  ],
+  "post": [
+   "sudo -n /usr/local/sbin/v100-tune rgc"
+  ]
+ },
+ {
+  "name": "ccd0-affinity",
+  "config": {
+   "binary": "/home/aim/opt/UnbiasedStrata/local/bin/strata-ccd0"
+  }
+ },
+ {
+  "name": "workers-16",
+  "config": {
+   "threads": 16
+  }
+ },
+ {
+  "name": "spec-5",
+  "config": {
+   "spec": 5
+  }
+ }
+]
