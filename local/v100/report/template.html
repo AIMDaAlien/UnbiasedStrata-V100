@@ -1,0 +1,343 @@
+<title>V100 Tuning Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one reading column (68rem) of instrument-panel sections; charts are SVG drawn to scale, before = slate, after = teal, power = amber. */
+  :root {
+    --bg: #F4F6F7; --panel: #FFFFFF; --fg: #18222B; --muted: #5C6B78; --line: #D7DEE3; --grid: #E6EBEE;
+    --before: #8C99A6; --after: #0F7C86; --after-soft: #D6EEF0; --power: #C4790F; --power-soft: #F7E7CF;
+    --good: #2F7D4E; --bad: #B2432C; --flat: #7A8793;
+    --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+    --body: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    --mono: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg: #0F1418; --panel: #161D23; --fg: #E7ECF0; --muted: #9DAAB5; --line: #28333C; --grid: #202A32;
+    --before: #7E8B98; --after: #45B8C2; --after-soft: #143338; --power: #E39B3C; --power-soft: #3A2A12;
+    --good: #5DB37F; --bad: #E0735B; --flat: #8A97A3; color-scheme: dark } }
+  :root[data-theme="dark"] {
+    --bg: #0F1418; --panel: #161D23; --fg: #E7ECF0; --muted: #9DAAB5; --line: #28333C; --grid: #202A32;
+    --before: #7E8B98; --after: #45B8C2; --after-soft: #143338; --power: #E39B3C; --power-soft: #3A2A12;
+    --good: #5DB37F; --bad: #E0735B; --flat: #8A97A3; color-scheme: dark }
+
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 4rem; }
+  .wrap { max-width: 68rem; margin-inline: auto; display: grid; gap: 3rem; }
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; line-height: 1.1; margin: 0; text-wrap: balance; }
+  h1 { font-size: clamp(2.1rem, 5vw, 3.4rem); letter-spacing: -0.015em; }
+  h2 { font-size: 1.55rem; }
+  h3 { font-size: 1.05rem; font-weight: 600; }
+  p { margin: 0; max-width: 65ch; }
+  .eyebrow { font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .lede { font-size: 1.15rem; color: var(--muted); max-width: 60ch; }
+  header { padding-top: 3rem; display: grid; gap: 1rem; }
+  section { display: grid; gap: 1.1rem; }
+  .note { color: var(--muted); max-width: 70ch; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  a { color: var(--after); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--after); outline-offset: 2px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 0.9rem; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem; display: grid; gap: 0.35rem; align-content: start; }
+  .tile .k { font-size: 0.85rem; color: var(--muted); }
+  .tile .v { font-family: var(--display); font-size: 2.2rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .tile .v small { font-family: var(--body); font-size: 0.85rem; font-weight: 400; color: var(--muted); margin-left: 0.3rem; }
+  .tile .d { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+  .tile .d b { color: var(--after); font-weight: 500; }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.2rem; display: grid; gap: 0.6rem; min-width: 0; }
+  .card .sub { font-size: 0.85rem; color: var(--muted); }
+  .chart { width: 100%; min-width: 0; }
+  .chart svg { width: 100%; height: auto; display: block; overflow: visible; font-family: var(--mono); font-size: 11px; }
+  .chart .lbl { fill: var(--fg); }
+  .chart .mut { fill: var(--muted); }
+  .chart .grid { stroke: var(--grid); stroke-width: 1; }
+  .chart .axis { stroke: var(--line); stroke-width: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; font-size: 0.82rem; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 2px; background: var(--sw); margin-right: 0.4rem; vertical-align: -1px; }
+
+  .rounds { display: grid; gap: 0; border-top: 1px solid var(--line); }
+  .round { display: grid; grid-template-columns: 3.2rem 1fr auto; gap: 0.8rem 1rem; padding: 0.85rem 0; border-bottom: 1px solid var(--line); align-items: start; }
+  .round .n { font-family: var(--mono); color: var(--muted); font-size: 0.85rem; padding-top: 0.2rem; }
+  .round .t { font-weight: 600; }
+  .round .r { color: var(--muted); font-size: 0.95rem; max-width: 60ch; }
+  .chip { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; padding: 0.2rem 0.5rem; border-radius: 999px; border: 1px solid; white-space: nowrap; margin-top: 0.15rem; }
+  .chip.adopted { color: var(--good); border-color: var(--good); }
+  .chip.rejected { color: var(--bad); border-color: var(--bad); }
+  .chip.flat { color: var(--flat); border-color: var(--flat); }
+  @media (max-width: 520px) { .round { grid-template-columns: 2.4rem 1fr; } .round .chip { grid-column: 2; justify-self: start; } }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 0.78rem; color: var(--muted); font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; }
+  td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .callout { border-left: 3px solid var(--power); background: var(--panel); border-radius: 0 10px 10px 0; padding: 1rem 1.2rem; display: grid; gap: 0.4rem; }
+  .callout.teal { border-left-color: var(--after); }
+  ul { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.35rem; max-width: 70ch; }
+  footer { border-top: 1px solid var(--line); padding-top: 1.2rem; color: var(--muted); font-size: 0.9rem; display: grid; gap: 0.5rem; }
+  @media (prefers-reduced-motion: no-preference) { .tile .v { transition: color .2s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Tesla V100-PCIe-32GB · Ryzen 7950X · Qwen3.8-Flash-Next GSQ-RCO IQ3_S · 196,608 context · 18 October 2026</div>
+    <h1>One day of tuning, same model, same card</h1>
+    <p class="lede">Every number below is a paired A/B on this machine, run one GPU job at a time under a thermal and power watchdog, and gated on an 80K-token correctness check and a frozen 24-task coding suite before anything went into production. Seven rounds, three hardware findings, and a production configuration that reads long prompts 47% faster and writes 34 to 49% faster, with the vision encoder loaded and lower energy per token.</p>
+  </header>
+
+  <section id="headline">
+    <h2>Before and after</h2>
+    <div class="tiles" id="tiles"></div>
+    <p class="note">Morning: engine 0.1.39, GPU capped at 100 W, prompt chunk 8192. Now: engine 0.1.43.1 with the Volta decode and prompt kernels and the async adaptive expert cache, 135 W, CPU boost capped at 4.5 GHz, chunk ceiling 32768, 12 workers, vision encoder loaded. Short prompts are 400-token coding answers at medium reasoning; the long prompt is a fresh 80K-token fixture with planted secrets that must come back verbatim.</p>
+  </section>
+
+  <section id="measures">
+    <h2>Seven measures, to scale</h2>
+    <div class="card">
+      <p class="sub">Each row is drawn on its own scale (longest bar = the larger of the two values). Lower is better for the last four.</p>
+      <div class="chart" id="c-measures"></div>
+      <div class="legend"><span style="--sw: var(--before)">morning (0.1.39, 100 W)</span><span style="--sw: var(--after)">production now (135 W, CPU capped)</span></div>
+    </div>
+  </section>
+
+  <section id="rounds">
+    <h2>Seven rounds, in order</h2>
+    <p class="note">Each round is one window with production stopped, two rounds of every candidate against the current production configuration, and a verdict. The order matters: later rounds build on what the earlier ones adopted.</p>
+    <div class="rounds">
+      <div class="round"><div class="n">1</div><div><div class="t">GPU power limit and clocks</div><div class="r">100 W cap bound everything. 125 W: +28% prefill, +9% decode, equal or lower system joules per token. Locked clocks never helped at any cap. 15.6-minute 180K soak at 125 W passed.</div></div><span class="chip adopted">125 W adopted</span></div>
+      <div class="round"><div class="n">2</div><div><div class="t">Engine 0.1.39 → 0.1.43.1, Volta decode table</div><div class="r">Same llama.cpp pin; 0.1.44+ avoided for a known decode regression. The opt-in Volta table: decode 74 → 81 tok/s short, 73 → 79 after 80K, 7% less GPU energy per token. Tail-skip and CPU-share off kept for exact answers.</div></div><span class="chip adopted">adopted</span></div>
+      <div class="round"><div class="n">3</div><div><div class="t">Kernel audit, async expert cache, 32K chunk ceiling</div><div class="r">iommu=pt and NMI watchdog off: no engine effect, measured; the real kernel win was the governor (idle 85 → 59 W). The async adaptive tier: +6 to 9% decode, 23/24 on the task suite. Vision encoder added at 2048 image tokens for 3 to 6% decode.</div></div><span class="chip adopted">adopted</span></div>
+      <div class="round"><div class="n">4–5</div><div><div class="t">Upstream Volta prompt kernels, opt-in PRs, Samsung SSD</div><div class="r">PR 1401's FP16 tensor-core prompt path, merged against its true base, parity-tested: +1.3% prefill, repeatable. The two decode opt-ins and serving the model from the Samsung drive were inside run-to-run noise.</div></div><span class="chip adopted">kernels adopted</span></div>
+      <div class="round"><div class="n">6</div><div><div class="t">CPU boost cap, 135 W, resident-biased routing</div><div class="r">4.5 GHz cap: engine unchanged, CPU energy per token −31%, Tctl 86 → 64 °C. 135 W: +6.7% at 80K, +15% at 180K, soaked and adopted. Resident routing: +7% decode per token but 22/24 and longer answers, so slower tasks.</div></div><span class="chip adopted">cap + 135 W adopted</span></div>
+      <div class="round"><div class="n">7</div><div><div class="t">The last software levers</div><div class="r">Clock ceilings cost decode and do not clip the transients. One-chiplet pinning −7% after long prompts. 16 workers a wash. Draft length 5 lowers acceptance. Huge pages already on; the hybrid KV format cannot stream.</div></div><span class="chip rejected">nothing adopted</span></div>
+    </div>
+  </section>
+
+  <section id="power">
+    <h2>Prefill is power-bound</h2>
+    <div class="grid2">
+      <div class="card">
+        <h3>80K prefill against the GPU cap</h3>
+        <p class="sub">Engine 0.1.39 sweep, boost clocks; 135 W point is the final engine. Kernels and chunking moved prefill by 1 to 2%; watts move it by tens.</p>
+        <div class="chart" id="c-power"></div>
+      </div>
+      <div class="card">
+        <h3>The 135 W soak</h3>
+        <p class="sub">GPU power, five back-to-back 180K prefills with the prompt cache defeated; 13 minutes under load, 5/5 secrets, no watchdog stop.</p>
+        <div class="chart" id="c-soak"></div>
+        <p class="sub">Mean under load 133 W, p95 177 W, peak sample 229 W. The peaks are the load burst itself: capping the clock ceiling did not trim them, which is why 150 W was left alone on a PC that has lost power under GPU load.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="cpu">
+    <h2>The CPU was boosting for nothing</h2>
+    <p class="note">The 7950X pinned its 85 °C limit in every run of the day. Prefill is one user-space core on the host side of the GPU pipeline, and above 4.5 GHz its clock never reached the critical path. Capping boost at 4.5 GHz left every engine number alone and took 22 °C and 31% of the CPU's energy per generated token off the table. This closed the cooling question without new hardware.</p>
+    <div class="grid2">
+      <div class="card"><h3>Decode after an 80K prompt</h3><p class="sub">tokens/s</p><div class="chart" id="c-cap-dec"></div></div>
+      <div class="card"><h3>CPU energy per generated token</h3><p class="sub">joules, 80K request, RAPL package</p><div class="chart" id="c-cap-j"></div></div>
+      <div class="card"><h3>CPU temperature</h3><p class="sub">Tctl maximum during the run, °C</p><div class="chart" id="c-cap-t"></div></div>
+    </div>
+  </section>
+
+  <section id="tasks">
+    <h2>Whole tasks, not just tokens</h2>
+    <p class="note">Decode speed can be bought with slower prefill. The frozen 24-task DeepSWE2 suite (seed 40, medium reasoning) measures the whole request: time to first token, generation, and the answer's correctness. October 13 ran at a 250 W cap on the old engine; the final run is at 125 W on the production configuration.</p>
+    <div class="card">
+      <div class="chart" id="c-tasks"></div>
+      <div class="legend"><span style="--sw: var(--before)">13 October, 250 W</span><span style="--sw: var(--after)">final configuration</span></div>
+      <p class="sub">Median task wall 37.2 s → 29.6 s; passes 22/24 → 23/24 (two tasks flip in opposite directions, both known to vary between repeats). Median decode inside the tasks 77 → 92 tok/s; first token in 1.4 to 1.8 s either way.</p>
+    </div>
+  </section>
+
+  <section id="kernel">
+    <h2>What the kernel changed, and what it could not</h2>
+    <div class="grid2">
+      <div class="callout teal">
+        <h3>Measured: nothing kernel-side on the engine's critical path</h3>
+        <p>Identity IOMMU mapping and the NMI watchdog off, paired before and after a reboot: decode, prefill, 80K wall and CPU joules all within 1%. The PCIe probe was already at the Gen3 x16 practical limit (13.1 GB/s). The NVIDIA PAT option is inert on driver 580.</p>
+      </div>
+      <div class="callout">
+        <h3>What did pay: the governor and the boost cap</h3>
+        <p>power-profiles-daemon had pinned a performance profile; balanced brings idle CPU package power from 85 to 59 W with the model loaded. The 4.5 GHz cap above is the other half. Both are drop-ins that survive a reboot.</p>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Kernel A/B, before and after the reboot</h3>
+      <div class="tablewrap"><table><thead><tr><th>Measure</th><th class="n">Before</th><th class="n">After</th><th class="n">Change</th></tr></thead><tbody id="t-kernel"></tbody></table></div>
+    </div>
+  </section>
+
+  <section id="rejected">
+    <h2>What did not move the needle</h2>
+    <ul>
+      <li>Locked SM clocks at any cap, and clock ceilings at 135 W (cost decode, peaks unchanged).</li>
+      <li>Worker count beyond 12, draft length 3, 5 or 6, KV window 64K, pool spin, ring size, larger n-gram row cache, swap and adaptation rates.</li>
+      <li>Two Volta decode opt-ins (argmax rows, fast norm), serving the shards from the Samsung 980 PRO, a second Volta prompt kernel (would conflict in 13 hunks for a projected 2 to 4% at 170 to 250 W).</li>
+      <li>Resident-biased routing: real per-token gain, worse per task (22/24, longer answers).</li>
+      <li>Pinning the engine to one chiplet: the expert streaming path wants both L3 caches.</li>
+      <li>Transparent huge pages (already on), suffix drafting (already default), the hybrid 4-bit KV cache (cannot stream).</li>
+    </ul>
+  </section>
+
+  <section id="left">
+    <h2>What is left</h2>
+    <ul>
+      <li><b>BIOS.</b> Restore AC Power Loss = Power On is the one setting that matters for a PC that drops power. AI Overclocking off and Curve Optimizer −20 → −10 or 0 are stability hygiene. With the boost cap in place, the PBO limits matter little.</li>
+      <li><b>Prefill.</b> Still the long-prompt bottleneck (180K ≈ 2.8 min) and only watts move it. 150 W is the approved ceiling and was deliberately not probed.</li>
+      <li><b>Driver.</b> Stay on 580 / CUDA 12. CUDA 13 dropped Volta.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Method: paired A/B via the fork's harness (GPU power, clocks and temperature sampled per second, RAPL CPU energy, engine log parsing, 80K secret gate), task suite via the frozen DeepSWE2 pack; every run wrapped in the thermal watchdog. Full record in the fork's <span class="num">docs/V100_TUNING.md</span>; working dashboard with every dataset: <a href="https://claude.ai/artifact/SVHuTwEfnSbhAVHd55oTzp">V100 Strata tuning</a>.</div>
+    <div>Vault note: Strata V100 tuning — 2026-10-18.</div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var D = __DATA__;
+  var css = getComputedStyle(document.documentElement);
+  function tok(n) { return 'var(' + n + ')'; }
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(n, a, t) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (t != null) e.textContent = t; return e; }
+  function svg(id, w, h) { var host = document.getElementById(id); host.innerHTML = ''; var s = el('svg', { viewBox: '0 0 ' + w + ' ' + h, role: 'img' }); host.appendChild(s); return s; }
+  function hostW(id, min) { var w = document.getElementById(id).clientWidth || 600; return Math.max(min, Math.min(760, w)); }
+  function f1(x) { return (Math.round(x * 10) / 10).toFixed(1); }
+  function f0(x) { return Math.round(x).toLocaleString('en-US'); }
+
+  // Tiles
+  var tiles = [
+    { k: 'Decode, short prompts', a: 67.25, b: 89.6, u: 'tok/s', f: f1, dir: 1 },
+    { k: 'Decode after an 80K prompt', a: 61.15, b: 90.7, u: 'tok/s', f: f1, dir: 1 },
+    { k: '80K prefill', a: 873, b: 1284, u: 'tok/s', f: f0, dir: 1 },
+    { k: '80K request, wall clock', a: 94.9, b: 64.7, u: 's', f: f1, dir: -1 }
+  ];
+  var th = document.getElementById('tiles');
+  tiles.forEach(function (t) {
+    var pct = Math.round((t.b / t.a - 1) * 100);
+    var d = document.createElement('div'); d.className = 'tile';
+    d.innerHTML = '<div class="k">' + t.k + '</div><div class="v">' + t.f(t.b) + '<small>' + t.u + '</small></div><div class="d">was ' + t.f(t.a) + ' · <b>' + (pct > 0 ? '+' : '') + pct + '%</b></div>';
+    th.appendChild(d);
+  });
+
+  // Paired bars, one scale per row
+  var measures = [
+    { k: 'Decode, short prompts (tok/s)', a: 67.25, b: 89.6, f: f1 },
+    { k: 'Decode after an 80K prompt (tok/s)', a: 61.15, b: 90.7, f: f1 },
+    { k: '80K prefill (tok/s)', a: 873, b: 1284, f: f0 },
+    { k: '80K request wall (s)', a: 94.9, b: 64.7, f: f1 },
+    { k: 'GPU J per generated token, short', a: 1.91, b: 2.06, f: function (x) { return x.toFixed(2); } },
+    { k: 'CPU J per generated token, short', a: 2.34, b: 1.24, f: function (x) { return x.toFixed(2); } },
+    { k: 'Idle CPU package (W)', a: 85, b: 59, f: f0 }
+  ];
+  function drawMeasures() {
+    var W = hostW('c-measures', 320), narrow = W < 560, rowH = narrow ? 62 : 46, top = 8, labW = narrow ? 0 : 250, barH = 14, s = svg('c-measures', W, top + measures.length * rowH);
+    measures.forEach(function (m, i) {
+      var y = top + i * rowH, mx = Math.max(m.a, m.b), avail = W - labW - 70;
+      s.appendChild(el('text', { x: 0, y: y + (narrow ? 12 : 20), 'class': 'lbl', 'font-size': 12 }, m.k));
+      [['a', 'before', 0], ['b', 'after', barH + 3]].forEach(function (r) {
+        var v = m[r[0]], w = Math.max(2, v / mx * avail), yy = y + (narrow ? 18 : 4) + r[2];
+        var g = el('g'); g.appendChild(el('title', {}, (r[1] === 'before' ? 'morning: ' : 'now: ') + m.f(v)));
+        g.appendChild(el('rect', { x: labW, y: yy, width: w, height: barH, rx: 3, fill: tok('--' + r[1]) }));
+        g.appendChild(el('text', { x: labW + w + 6, y: yy + barH - 3, 'class': 'lbl' }, m.f(v)));
+        s.appendChild(g);
+      });
+    });
+  }
+  drawMeasures();
+
+  // Power sweep line
+  (function () {
+    var pts = [[100, 879], [125, 1122], [150, 1264]], final135 = [135, 1284];
+    var W = 520, H = 230, L = 50, R = 20, T = 14, B = 34, s = svg('c-power', W, H);
+    var x = function (w) { return L + (w - 95) / (155 - 95) * (W - L - R); }, y = function (v) { return T + (1400 - v) / (1400 - 800) * (H - T - B); };
+    [800, 1000, 1200, 1400].forEach(function (v) { s.appendChild(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), 'class': 'grid' })); s.appendChild(el('text', { x: L - 6, y: y(v) + 4, 'text-anchor': 'end', 'class': 'mut' }, f0(v))); });
+    [100, 125, 150].forEach(function (w) { s.appendChild(el('text', { x: x(w), y: H - 12, 'text-anchor': 'middle', 'class': 'mut' }, w + ' W')); });
+    s.appendChild(el('path', { d: pts.map(function (p, i) { return (i ? 'L' : 'M') + x(p[0]) + ' ' + y(p[1]); }).join(' '), fill: 'none', stroke: tok('--before'), 'stroke-width': 2 }));
+    pts.forEach(function (p) { var g = el('g'); g.appendChild(el('title', {}, p[0] + ' W: ' + f0(p[1]) + ' tok/s (0.1.39)')); g.appendChild(el('circle', { cx: x(p[0]), cy: y(p[1]), r: 5, fill: tok('--before') })); g.appendChild(el('text', { x: x(p[0]), y: y(p[1]) - 10, 'text-anchor': 'middle', 'class': 'lbl' }, f0(p[1]))); s.appendChild(g); });
+    var g = el('g'); g.appendChild(el('title', {}, '135 W, final engine: 1,284 tok/s'));
+    g.appendChild(el('circle', { cx: x(final135[0]), cy: y(final135[1]), r: 6, fill: tok('--power') }));
+    g.appendChild(el('text', { x: x(final135[0]), y: y(final135[1]) + 20, 'text-anchor': 'middle', 'class': 'lbl' }, '1,284 at 135 W, final engine'));
+    s.appendChild(g);
+    s.appendChild(el('text', { x: L, y: T - 2, 'class': 'mut' }, 'tok/s'));
+  })();
+
+  // Soak trace
+  (function () {
+    var tr = D.trace, W = 520, H = 200, L = 40, R = 14, T = 14, B = 30, s = svg('c-soak', W, H);
+    var tmax = tr[tr.length - 1][0], x = function (t) { return L + t / tmax * (W - L - R); }, y = function (w) { return T + (240 - w) / 240 * (H - T - B); };
+    [0, 60, 120, 180, 240].forEach(function (w) { s.appendChild(el('line', { x1: L, x2: W - R, y1: y(w), y2: y(w), 'class': 'grid' })); s.appendChild(el('text', { x: L - 6, y: y(w) + 4, 'text-anchor': 'end', 'class': 'mut' }, w)); });
+    for (var m = 0; m <= tmax / 60; m += 3) s.appendChild(el('text', { x: x(m * 60), y: H - 10, 'text-anchor': 'middle', 'class': 'mut' }, m + ' min'));
+    s.appendChild(el('path', { d: 'M' + x(0) + ' ' + y(tr[0][1]) + tr.map(function (p) { return 'L' + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1); }).join('') + 'L' + x(tmax) + ' ' + y(0) + 'L' + x(0) + ' ' + y(0) + 'Z', fill: tok('--power-soft') }));
+    s.appendChild(el('path', { d: tr.map(function (p, i) { return (i ? 'L' : 'M') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1); }).join(''), fill: 'none', stroke: tok('--power'), 'stroke-width': 1.4 }));
+    s.appendChild(el('line', { x1: L, x2: W - R, y1: y(135), y2: y(135), stroke: tok('--fg'), 'stroke-dasharray': '4 4', 'stroke-width': 1 }));
+    s.appendChild(el('text', { x: L + 4, y: y(135) - 5, 'class': 'lbl' }, '135 W limit'));
+    var pk = D.peak;
+    s.appendChild(el('circle', { cx: x(pk[0]), cy: y(pk[1]), r: 3.5, fill: tok('--bad') }));
+    s.appendChild(el('text', { x: Math.min(x(pk[0]) + 6, W - 90), y: y(pk[1]) - 2, 'class': 'lbl' }, 'peak ' + pk[1] + ' W'));
+    s.appendChild(el('text', { x: L, y: T - 2, 'class': 'mut' }, 'W'));
+  })();
+
+  // CPU cap bars
+  var caps = [
+    { k: 'uncapped (5.9 GHz)', dec: 88.05, j: 28.5, t: 85.9 },
+    { k: '4.5 GHz', dec: 88.35, j: 19.7, t: 64.4, acc: true },
+    { k: '4.0 GHz', dec: 86.15, j: 17.6, t: 57.6 },
+    { k: '3.5 GHz', dec: 83.25, j: 16.4, t: 56.8 }
+  ];
+  function capBars(id, key, fmt, unit, floor) {
+    var W = 360, rowH = 30, labW = 128, s = svg(id, W, 6 + caps.length * rowH), mx = Math.max.apply(null, caps.map(function (c) { return c[key]; }));
+    caps.forEach(function (c, i) {
+      var y = 6 + i * rowH, w = Math.max(2, c[key] / mx * (W - labW - 60));
+      s.appendChild(el('text', { x: 0, y: y + 15, 'class': 'lbl', 'font-size': 12 }, c.k));
+      var g = el('g'); g.appendChild(el('title', {}, c.k + ': ' + fmt(c[key]) + unit));
+      g.appendChild(el('rect', { x: labW, y: y + 2, width: w, height: 18, rx: 3, fill: c.acc ? tok('--after') : tok('--before') }));
+      g.appendChild(el('text', { x: labW + w + 6, y: y + 16, 'class': 'lbl' }, fmt(c[key]) + unit));
+      s.appendChild(g);
+    });
+  }
+  capBars('c-cap-dec', 'dec', f1, '');
+  capBars('c-cap-j', 'j', f1, ' J');
+  capBars('c-cap-t', 't', f0, ' °C');
+
+  // Tasks dumbbell
+  function drawTasks() {
+    var rows = D.tasks.slice().sort(function (a, b) { return b.a - a.a; });
+    var W = hostW('c-tasks', 320), narrow = W < 560, rowH = narrow ? 24 : 21, labW = narrow ? 118 : 170, top = 22, s = svg('c-tasks', W, top + rows.length * rowH + 6);
+    var mx = 150, x = function (v) { return labW + v / mx * (W - labW - 40); };
+    [0, 30, 60, 90, 120, 150].forEach(function (v) { s.appendChild(el('line', { x1: x(v), x2: x(v), y1: top - 6, y2: top + rows.length * rowH, 'class': 'grid' })); s.appendChild(el('text', { x: x(v), y: 10, 'text-anchor': 'middle', 'class': 'mut' }, v + ' s')); });
+    rows.forEach(function (r, i) {
+      var y = top + i * rowH + 10;
+      s.appendChild(el('text', { x: 0, y: y + 4, 'class': 'lbl', 'font-size': narrow ? 9 : 11 }, narrow ? r.task.replace(/^(e\d+)-.*$/, '$1') + ' ' + r.task.replace(/^e\d+-/, '').slice(0, 14) : r.task));
+      var g = el('g'); g.appendChild(el('title', {}, r.task + ': ' + f1(r.a) + ' s → ' + f1(r.b) + ' s' + (r.pb ? '' : ' (fails now)') + (r.pa ? '' : ' (failed Oct 13)')));
+      g.appendChild(el('line', { x1: x(Math.min(r.a, r.b)), x2: x(Math.max(r.a, r.b)), y1: y, y2: y, stroke: tok('--line'), 'stroke-width': 3 }));
+      g.appendChild(el('circle', { cx: x(r.a), cy: y, r: 4.5, fill: tok('--before') }));
+      g.appendChild(el('circle', { cx: x(r.b), cy: y, r: 4.5, fill: r.pb ? tok('--after') : tok('--bad') }));
+      if (!r.pb) g.appendChild(el('text', { x: x(Math.max(r.a, r.b)) + 8, y: y + 4, 'class': 'mut' }, 'fails'));
+      s.appendChild(g);
+    });
+    [[37.2, '--before', 'median 37.2 s'], [29.6, '--after', 'median 29.6 s']].forEach(function (m, i) {
+      s.appendChild(el('line', { x1: x(m[0]), x2: x(m[0]), y1: top - 6, y2: top + rows.length * rowH, stroke: tok(m[1]), 'stroke-dasharray': '3 3', 'stroke-width': 1.2 }));
+      s.appendChild(el('text', { x: x(m[0]) + (i ? -4 : 4), y: top + rows.length * rowH + 4, 'text-anchor': i ? 'end' : 'start', 'class': 'lbl' }, m[2]));
+    });
+  }
+  drawTasks();
+  var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { drawMeasures(); drawTasks(); }, 150); });
+
+  // Kernel table
+  var kern = [
+    ['Decode, short prompts (tok/s)', 81.55, 81.0], ['Decode after an 80K prompt (tok/s)', 79.45, 81.3], ['80K prefill (tok/s)', 1180.4, 1183.4],
+    ['80K request wall (s)', 70.53, 70.30], ['CPU J per token, short', 1.936, 1.926], ['CPU J per token, 80K request', 26.04, 25.96], ['PCIe probe at start (GB/s)', 13.2, 13.1]
+  ];
+  var tb = document.getElementById('t-kernel');
+  kern.forEach(function (r) {
+    var tr = document.createElement('tr'), ch = (r[2] / r[1] - 1) * 100;
+    tr.innerHTML = '<td>' + r[0] + '</td><td class="n">' + r[1] + '</td><td class="n">' + r[2] + '</td><td class="n">' + (ch > 0 ? '+' : '') + ch.toFixed(1) + '%</td>';
+    tb.appendChild(tr);
+  });
+})();
+</script>
