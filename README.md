@@ -120,3 +120,11 @@ Items 2 and 3 are made once with upstream Strata's tools and will be published; 
 MIT, as upstream. The engine is the work of Niko1221 and the Strata contributors; see [LICENSE](LICENSE)
 and [UPSTREAM.md](UPSTREAM.md). llama.cpp and ggml (MIT) are used as a pinned submodule. The model files
 have their own licences.
+
+This repository (`AIMDaAlien/UnbiasedStrata-V100`) is a fork of Robert Karl's
+[UnbiasedStrata](https://github.com/robertkarl/UnbiasedStrata), itself a snapshot of upstream Strata. The upstream
+copyright notice is kept unchanged in `LICENSE`; the V100 additions (the 0.1.43.1 engine import, the Volta kernel
+merges from upstream PRs 1401/2357/2358 by their respective authors, the GPU vision helper path, the paired A/B
+harness under `local/`, and the tuning record in `docs/V100_TUNING.md`) are © 2026 AIMDaAlien and released under
+the same MIT licence. It is tuned for one machine (Tesla V100-PCIe-32GB, Ryzen 7950X, 64 GB); the numbers in the
+record are measurements, not promises for other hardware.
