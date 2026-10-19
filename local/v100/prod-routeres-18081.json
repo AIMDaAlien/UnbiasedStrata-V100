@@ -1,0 +1,32 @@
+{
+ "model": "/home/aim/opt/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+ "pack": "/home/aim/Work/v100-20261013/packs/iq3_s",
+ "mtp": "/home/aim/opt/Strata-data/mtp/rt",
+ "port": 18081,
+ "context": 196608,
+ "threads": 12,
+ "ple_io": "direct",
+ "spec": 4,
+ "kv": "int8",
+ "kv_resident": 32768,
+ "environment": {
+  "CUDA_VISIBLE_DEVICES": "0",
+  "OMP_NUM_THREADS": "1",
+  "STRATA_PREFILL_AUTO_MAX": "32768",
+  "STRATA_RESIDENT_HEADROOM_GIB": null,
+  "STRATA_SM70_TABLE": "1",
+  "STRATA_ROUTE_TAIL_SKIP": "0",
+  "STRATA_PREFILL_CPU_SHARE": "0",
+  "STRATA_ROUTE_RESIDENT": "0.5"
+ },
+ "binary": "/home/aim/opt/UnbiasedStrata/local/bin/unbiased-strata-0.1.43.1-sm70-vision",
+ "vision_mmproj": "/home/aim/opt/Strata-data/models/mmproj/mmproj-Qwen3.8-Flash-Next-Q8_0.gguf",
+ "vision_tokens": 2048,
+ "vision_helper": "/home/aim/opt/UnbiasedStrata/local/bin/strata-vision",
+ "engine_args": [
+  "--vram-reserve-mib",
+  "2400",
+  "--adapt-async",
+  "1"
+ ]
+}

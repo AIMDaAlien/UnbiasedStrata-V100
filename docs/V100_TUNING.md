@@ -252,6 +252,64 @@ the `pr-all` binary (`local/bin/unbiased-strata-0.1.43.1-sm70-pr1401`); the two 
 exact kernels kept); the model stays on the ORICO drive with the Samsung copy kept as a ready fallback. The CPU sits
 at its 85 C cap in every candidate: cooling, not software, decides that number.
 
+## Round 6 at 125 W: CPU boost cap, 135 W probe, resident routing (production vision config, 2026-10-18 night)
+
+Window housekeeping first: the two queued chains for this round had deadlocked for two hours. Each polled
+`pgrep -f` for the previous job's label, and that label sat in the chain's own command line, so each matched itself
+and slept forever. Rule from now on: one script per window, launched once; never gate on a pattern that appears in
+the waiting shell.
+
+### CPU boost cap (`scaling_max_freq`, 2 rounds, 80K + 2 short)
+
+| cap | decode short | decode after 80K | prefill 80K | 80K wall | CPU J/tok (80K) | Tctl max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| uncapped (5883 MHz boost) | 87.4 | 88.1 | 1202 | 68.9 s | 28.5 | 85.9 C |
+| **4500 MHz** | 87.2 | 88.4 | 1195 | 69.2 s | **19.7** | **64.4 C** |
+| 4000 MHz | 87.1 | 86.2 | 1194 | 69.4 s | 17.6 | 57.6 C |
+| 3500 MHz | 86.8 | 83.3 | 1195 | 69.4 s | 16.4 | 56.8 C |
+
+The engine does not use the boost: at 4.5 GHz decode is unchanged, 80K prefill is -0.6% (inside the run-to-run
+spread), the 80K wall clock is +0.3 s, while the CPU spends 31% less energy per generated token and stops at 64 C
+instead of pinning the 85 C BIOS limit. 4.0 GHz starts to cost decode after long prompts (-2%), 3.5 GHz costs 5%.
+Adopted: 4500 MHz (`v100-tune maxfreq 4500` now; `adopt/cpu-maxfreq-4500.conf` as `/etc/tmpfiles.d` drop-in for
+boot, installer `adopt/install-cpu-maxfreq.sh`). This is the measured answer to the cooling question: the heat came
+from single-core boost residency during prefill, which the engine never cashes in. It also makes the BIOS boost
+override / Curve Optimizer items low-stakes: with the cap, the chip never visits the voltages where -20 CO is
+risky. Note for other workloads on this PC: single-thread peaks lose up to 20% (5.7 -> 4.5 GHz); undo with
+`v100-tune maxfreq reset`.
+
+### 135 W probe (1 round, 80K + 2 short; GPU locked at neither)
+
+| cap | decode short | decode after 80K | prefill 80K | 80K wall | GPU W (80K) | GPU J/tok |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 125 W | 87.4 | 89.1 | 1203 | 68.9 s | 120 | 35.5 |
+| 135 W | 89.6 | 90.7 | **1284** | **64.7 s** | 131 | 36.3 |
+
+Ten more watts buy +6.7% prefill and -6% on an 80K prompt's wall clock (+2% decode) at +2% GPU energy per token:
+roughly energy-neutral per unit of work, not a free lunch. Not adopted: 125 W is the soaked cap on a PC that has
+lost power under GPU transients, and 135 W would need its own 15-minute soak (peaks ran 192 W at the 125 W cap).
+Available if the user wants the 6%.
+
+### `STRATA_ROUTE_RESIDENT=0.5` (2 rounds, 80K + 2 short)
+
+| candidate | decode short | decode after 80K | GPU hit % (80K) | GPU J/tok (80K) | gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| production | 87.1 | 87.9 | 80.5 | 38.5 | 2/2 |
+| route-resident 0.5 | 88.4 | **94.4** | **92.3** | 36.7 | 2/2 |
+
+Biasing the router toward experts already resident on the GPU lifts the cache hit rate from 80% to 92% after a
+long prompt and decode by 7%, at lower GPU energy. It changes which experts answer, so the 80K secret gate is not
+enough; the frozen 24-task suite decided against it: 22/24 passes (production 23/24; e5 and e24 flipped to fail, e13
+to pass), median task wall 32.7 s vs 29.6 s, because the answers ran longer (median 2886 vs 2570 generated tokens)
+while task-level decode was +0.7%. The per-token gain is real, the per-task result is worse. **Rejected.**
+Result files: `bench/results/v100-routeres-0.5.json` vs `v100-after-tuning-async32k-flash-40.json`;
+`local/compare_tasks.py` prints the comparison.
+
+### Production after round 6
+
+Binary `local/bin/unbiased-strata-0.1.43.1-sm70-pr1401` (pr-all, switched 21:31, health + eight image tests pass),
+125 W, CPU boost capped at 4500 MHz, everything else as in round 3. Window script: `local/v100/window6.sh`.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at
@@ -261,9 +319,10 @@ at its 85 C cap in every candidate: cooling, not software, decides that number.
   balanced` is the persistent fix: governor powersave, EPP balance_performance, idle package 59 W / Tctl 63 C with the
   model loaded (was 84 W / 76 C).
 - Vision: encoder helper build, front-end image support, VRAM reserve sizing (approved, after this).
-- CPU cooling: Tctl reaches the 85 C BIOS cap under any sustained all-core load (builds, long prefills) regardless
-  of worker count. A cooler or fan-curve fix is the remaining hardware item; the -20 Curve Optimizer is a
-  stability suspect for the silent power-offs.
+- CPU cooling: resolved by measurement in round 6. The 85 C was boost residency the engine never used; the 4.5 GHz
+  cap holds Tctl at 64 C with identical engine numbers. Boot persistence needs the tmpfiles drop-in installed
+  (`adopt/install-cpu-maxfreq.sh`). BIOS items left: Restore AC Power Loss = Power On (the one that matters for a PC
+  that drops power), AI Overclocking off and Curve Optimizer -20 -> -10/0 as stability hygiene.
 
 
 ## Vision (approved 2026-10-18, after the tuning lands)
