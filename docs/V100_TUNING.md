@@ -286,9 +286,17 @@ risky. Note for other workloads on this PC: single-thread peaks lose up to 20% (
 | 135 W | 89.6 | 90.7 | **1284** | **64.7 s** | 131 | 36.3 |
 
 Ten more watts buy +6.7% prefill and -6% on an 80K prompt's wall clock (+2% decode) at +2% GPU energy per token:
-roughly energy-neutral per unit of work, not a free lunch. Not adopted: 125 W is the soaked cap on a PC that has
-lost power under GPU transients, and 135 W would need its own 15-minute soak (peaks ran 192 W at the 125 W cap).
-Available if the user wants the 6%.
+roughly energy-neutral per unit of work, not a free lunch. Held back pending a soak (peaks ran 192 W at the 125 W cap).
+
+**135 W soak (2026-10-18 22:09-22:24, user-approved after the CPU cap landed): passed.** Five back-to-back 180K
+prefills (prompt cache defeated) on the production pr-all binary, 13.3 min under load: secrets 5/5, no watchdog
+stop, no kernel/NVRM messages; GPU power mean 133 W, p95 177 W, peak sample 219 W (125 W soak: 123 / 157 / 192);
+GPU 59 C max; CPU Tctl 66 C max (the 4.5 GHz cap at work; the 125 W soak ran at 86 C). 180K prefill 1086-1094
+tok/s vs 939-947 at 125 W (+15%: the longer the prompt, the more power-bound), 180K request wall 168 s vs 194 s;
+decode after the 180K prompt 76 -> 92 tok/s over the five requests (hit rate climbing to 97%). **Adopted: 135 W
+is the cap** (`v100-tune pl 135` live; boot override `adopt/gpu-nv-power-override-135.conf`, installer
+`adopt/install-gpu-135w.sh`). 150 W remains the approved probe ceiling and was not tried: the peak-transient
+margin (219 W samples on a PC that has lost power under GPU load) is the reason to stop here.
 
 ### `STRATA_ROUTE_RESIDENT=0.5` (2 rounds, 80K + 2 short)
 
@@ -308,7 +316,7 @@ Result files: `bench/results/v100-routeres-0.5.json` vs `v100-after-tuning-async
 ### Production after round 6
 
 Binary `local/bin/unbiased-strata-0.1.43.1-sm70-pr1401` (pr-all, switched 21:31, health + eight image tests pass),
-125 W, CPU boost capped at 4500 MHz, everything else as in round 3. Window script: `local/v100/window6.sh`.
+135 W (after the soak), CPU boost capped at 4500 MHz, everything else as in round 3. Window script: `local/v100/window6.sh`.
 
 ## Still open
 
