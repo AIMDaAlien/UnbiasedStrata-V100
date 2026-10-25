@@ -431,6 +431,42 @@ median +2%. Short agent prompts gain nothing from the faster prompt read. **Verd
 on fresh long prompts, -2% decode, quality and vision equal on one seed); production stays on 0.1.43.1 + PR 1401. The
 0.1.50 setup is kept ready in `~/opt/strata-upstream/0.2.6` (profile `local/v100/up-best-18081.json`).
 
+## Round 10: the conversation cache, and the model label (2026-10-25 evening, 150 W)
+
+`--prompt-cache 6` (default) already keeps one conversation's checkpoints, so a chat that simply continues reuses its
+whole history. What it cannot survive is an unrelated request in between: the new prompt overwrites the live KV, and
+the chat's next turn reads everything again. A companion that sends separate screenshot or title requests between chat
+turns hits exactly that. `--conversation-cache-mib` parks the outgoing conversation (its running state and its K/V) in
+**host RAM**, so it costs no VRAM and leaves vision alone. Test (`local/conv_cache_test.py`, `local/v100/convcache.sh`,
+2 rounds, order alternated): A1 = one 2560x1440 screenshot + the fresh 80K fixture; B = another screenshot, short
+question; C = a title request; A2 = A's next turn (asks about A1's screenshot and a secret); A3 = A's next turn at once.
+
+| step | cache off | cache on (4096 MiB, 3 slots, min 8192 tokens, floor 5120 MiB) |
+| --- | ---: | ---: |
+| A1 long turn | 63.7 / 64.2 s | 64.0 / 64.2 s |
+| B side screenshot | 4.1 / 4.2 s | 5.0 / 4.8 s (parks A: 82K tokens in 0.63-0.79 s) |
+| C side title | 0.4 s | 0.4 s (2K-token B not parked: under the minimum) |
+| **A2 after side requests** | **62.0 / 62.1 s** (re-reads 82K) | **1.0 / 1.0 s** (82K reused, restore 79 ms) |
+| A3 straight follow-up | 0.5 / 0.9 s | 0.5 s |
+
+Every answer passed (secrets, the framed node in the first screenshot); A2 and A3 are byte-identical across all four
+runs, so a restore answers exactly as a full re-read does (A1 differs between rounds only, before any parking). A parked
+82K conversation is **1.72 GB** (~21 KB/token: QSA K/V, indexer rows, draft-layer K/V and the running state), so a
+180K one is ~3.8 GB. Least MemAvailable with one parked: 5.8 GB (7.0-7.9 GB without). VRAM unchanged (2116 MiB free
+before the encoder loads). **Adopted** in production with those four flags; the guard's floor (5120 MiB) keeps the
+desktop's room, so with today's ~7 GB free one long chat of up to ~100K parks and a larger one is skipped (it then
+re-reads as before; parking never fails a request).
+
+RAM is the budget, not VRAM: the engine holds 43.9 GB (38.38 GiB page-locked experts that miss the card, the 2.32 GiB
+full K/V, 3.2 GB other), the encoder helper 0.5 GB, the desktop ~10.7 GB. Nothing frees RAM without a cost: the
+largest candidate, the RAM copy of the 7700 cache slots the prompt path borrows (14.57 GiB), is what refills those
+slots after each long prompt without reading the pack from disk.
+
+Model label: production has always loaded the IQ3_S files. The engine's `/v1/models` id
+`qwen3.8-flash-next-iq3_xxs` is a constant in `frontend/main.cpp` (`kModelName`), and requests are not matched on it;
+the gateway lists the model as `flash`. The roster (`~/.config/aim/fleet.yaml`) still described the RTX 3060 setup
+(IQ3_XXS, port 8081) and now reads IQ3_S on the V100 at 8083; the opencode provider label likewise.
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at

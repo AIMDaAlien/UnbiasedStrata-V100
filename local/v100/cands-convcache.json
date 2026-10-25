@@ -1,0 +1,5 @@
+[
+ {"name": "off", "engine_args": []},
+ {"name": "cache4g", "engine_args": ["--conversation-cache-mib", "4096", "--conversation-cache-slots", "3",
+   "--conversation-cache-min-tokens", "8192", "--conversation-cache-min-free-mib", "5120"]}
+]

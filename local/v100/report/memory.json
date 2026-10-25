@@ -1,0 +1,17 @@
+{"_source": "production at 150 W, 2026-10-25: engine log lines, nvidia-smi per process, /proc/meminfo; RAM row shows one 82K-token chat parked (1.72 GB measured)",
+ "vram": [
+  {"label": "expert cache", "gib": 23.03, "color": "#127c87"},
+  {"label": "core weights", "gib": 3.40, "color": "#4a6378"},
+  {"label": "runtime + buffers", "gib": 1.75, "color": "#8c9aa8"},
+  {"label": "vision encoder", "gib": 1.23, "color": "#d99a2b"},
+  {"label": "draft head", "gib": 1.02, "color": "#b7c2cc"},
+  {"label": "recent-KV window", "gib": 0.39, "color": "#c0504d"},
+  {"label": "free", "gib": 1.10, "color": "#eef1f4"}],
+ "ram": [
+  {"label": "experts that don't fit on the card", "gib": 38.38, "color": "#127c87"},
+  {"label": "engine other", "gib": 3.25, "color": "#8c9aa8"},
+  {"label": "full KV cache", "gib": 2.32, "color": "#4a6378"},
+  {"label": "vision helper", "gib": 0.48, "color": "#d99a2b"},
+  {"label": "desktop + apps", "gib": 10.7, "color": "#c9d1d9"},
+  {"label": "saved chat", "gib": 1.61, "color": "#c0504d"},
+  {"label": "free", "gib": 5.2, "color": "#eef1f4"}]}
