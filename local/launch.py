@@ -27,6 +27,8 @@ def command(config):
             '--model', config['model'], '--pack', config['pack'], '--mtp', config['mtp'],
             '--host', '127.0.0.1', '--port', str(config['port']),
             '--ctx', str(config['context']), '--threads', str(config['threads'])]
+    if config.get('model_name'):   # the id /v1/models reports (the engine's default names the IQ3_XXS release)
+        cmd += ['--model-name', config['model_name']]
     if config.get('vision_mmproj'):   # images: the model's own encoder on the GPU (tools/vision/strata-vision)
         cmd += ['--vision', config['vision_mmproj'], '--vision-tokens', str(config.get('vision_tokens', 2048))]
         if config.get('vision_helper'):

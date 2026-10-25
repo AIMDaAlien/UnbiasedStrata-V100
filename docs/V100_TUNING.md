@@ -466,6 +466,11 @@ Model label: production has always loaded the IQ3_S files. The engine's `/v1/mod
 `qwen3.8-flash-next-iq3_xxs` is a constant in `frontend/main.cpp` (`kModelName`), and requests are not matched on it;
 the gateway lists the model as `flash`. The roster (`~/.config/aim/fleet.yaml`) still described the RTX 3060 setup
 (IQ3_XXS, port 8081) and now reads IQ3_S on the V100 at 8083; the opencode provider label likewise.
+The front end now takes `--model-name NAME` (default unchanged) and `local/launch.py` passes the profile key
+`model_name`; production runs the rebuilt `local/bin/unbiased-strata-0.1.43.1-sm70-pr1401-name` (only
+`frontend/main.cpp` recompiled; sha256 8c712151...) with `model_name` `qwen3.8-flash-next-iq3_s`. Same six prose
+prompts on both binaries: 59.8-74.6 tok/s old vs 66.3-73.9 new, draft acceptance about 0.5 on both (prose accepts
+fewer drafts than the harness prompts), so no change beyond the name.
 
 ## Still open
 

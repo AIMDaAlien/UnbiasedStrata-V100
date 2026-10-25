@@ -37,7 +37,8 @@ int strata_engine_main(int argc, char** argv);
 
 namespace {
 
-const char* const kModelName = "qwen3.8-flash-next-iq3_xxs";
+// the id /v1/models and every reply report; --model-name overrides it (requests are not matched against it)
+const char* const kDefaultModelName = "qwen3.8-flash-next-iq3_xxs";
 
 struct Options {
     std::string model;                  // shard 1 of the GGUF
@@ -53,6 +54,7 @@ struct Options {
     std::string vision_helper;          // --vision-helper PATH: the strata-vision binary (default: beside this one)
     int vision_tokens = 2048;           // --vision-tokens N: the most tokens one picture becomes
     int vision_threads = 0;             // --vision-threads N: the helper's CPU threads (0: its default)
+    std::string model_name = kDefaultModelName;   // --model-name NAME
 };
 
 void usage() {
@@ -66,6 +68,7 @@ void usage() {
         "                  set it inside a container, where the host's core count is not yours)\n"
         "  --host ADDR     address to listen on (default 127.0.0.1)\n"
         "  --port N        port to listen on (default 8080)\n"
+        "  --model-name NAME  the model id /v1/models and replies report (default qwen3.8-flash-next-iq3_xxs)\n"
         "  --vision MMPROJ images: the model's vision encoder (mmproj GGUF), run on the GPU by strata-vision\n"
         "  --vision-tokens N   the most tokens one picture becomes (default 2048; more keeps small text legible)\n"
         "  --vision-helper PATH  the strata-vision binary (default: strata-vision beside this binary)\n"
@@ -797,7 +800,7 @@ struct Server {
             out["id"] = id;
             out["object"] = "chat.completion";
             out["created"] = created;
-            out["model"] = kModelName;
+            out["model"] = opt.model_name;
             out["choices"] = common_json::array();
             out["choices"].push_back(choice);
             out["usage"] = usage_json(r);
@@ -818,7 +821,7 @@ struct Server {
                 out["id"] = id;
                 out["object"] = "chat.completion.chunk";
                 out["created"] = created;
-                out["model"] = kModelName;
+                out["model"] = opt.model_name;
                 out["choices"] = common_json::array();
                 out["choices"].push_back(choice);
                 if (done) { out["usage"] = usage_json(*done); out["timings"] = timings_json(*done); }
@@ -894,6 +897,7 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--host") o.host = next("--host");
         else if (a == "--port") o.port = std::atoi(next("--port").c_str());
+        else if (a == "--model-name") o.model_name = next("--model-name");
         else if (a == "--ctx") o.ctx = std::atoll(next("--ctx").c_str());
         else if (a == "--threads") o.threads = std::atoi(next("--threads").c_str());
         else if (a == "--vision") o.vision_mmproj = next("--vision");
@@ -1009,7 +1013,7 @@ int main(int argc, char** argv) {
     });
     http.Get("/v1/models", [&](const httplib::Request&, httplib::Response& res) {
         common_json m = common_json::object();
-        m["id"] = kModelName;
+        m["id"] = srv.opt.model_name;
         m["object"] = "model";
         m["owned_by"] = "local";
         m["context_length"] = srv.opt.ctx;
