@@ -1,0 +1,7 @@
+[
+ {"name": "pl135", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 135"]},
+ {"name": "pl150", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 150"],
+  "post": ["sudo -n /usr/local/sbin/v100-tune pl 135"]},
+ {"name": "pl165", "pre": ["sudo -n /usr/local/sbin/v100-tune rgc", "sudo -n /usr/local/sbin/v100-tune pl 165"],
+  "post": ["sudo -n /usr/local/sbin/v100-tune pl 135"]}
+]

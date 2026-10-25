@@ -1,0 +1,90 @@
+[
+ {
+  "name": "prod-150",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "up-default",
+  "config": {
+   "argv": [
+    "/home/aim/opt/strata-upstream/0.2.6/src/.venv/bin/python",
+    "/home/aim/opt/strata-upstream/0.2.6/src/serve/server.py",
+    "--engine",
+    "strata",
+    "--config",
+    "/home/aim/opt/strata-upstream/0.2.6/src/ab/up-default.json",
+    "--port",
+    "18081"
+   ]
+  },
+  "environment": {
+   "STRATA_SM70_TABLE": null,
+   "STRATA_ROUTE_TAIL_SKIP": null,
+   "STRATA_PREFILL_CPU_SHARE": null,
+   "STRATA_PREFILL_AUTO_MAX": null,
+   "STRATA_ENGINE_NICE": "0"
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "up-matched",
+  "config": {
+   "argv": [
+    "/home/aim/opt/strata-upstream/0.2.6/src/.venv/bin/python",
+    "/home/aim/opt/strata-upstream/0.2.6/src/serve/server.py",
+    "--engine",
+    "strata",
+    "--config",
+    "/home/aim/opt/strata-upstream/0.2.6/src/ab/up-matched.json",
+    "--port",
+    "18081"
+   ]
+  },
+  "environment": {
+   "STRATA_SM70_TABLE": "1",
+   "STRATA_ROUTE_TAIL_SKIP": "0",
+   "STRATA_PREFILL_CPU_SHARE": "0",
+   "STRATA_PREFILL_AUTO_MAX": "32768",
+   "STRATA_PF_WMMA": "1",
+   "STRATA_ENGINE_NICE": "0"
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "up-matched-gdn2",
+  "config": {
+   "argv": [
+    "/home/aim/opt/strata-upstream/0.2.6/src/.venv/bin/python",
+    "/home/aim/opt/strata-upstream/0.2.6/src/serve/server.py",
+    "--engine",
+    "strata",
+    "--config",
+    "/home/aim/opt/strata-upstream/0.2.6/src/ab/up-matched.json",
+    "--port",
+    "18081"
+   ]
+  },
+  "environment": {
+   "STRATA_SM70_TABLE": "1",
+   "STRATA_ROUTE_TAIL_SKIP": "0",
+   "STRATA_PREFILL_CPU_SHARE": "0",
+   "STRATA_PREFILL_AUTO_MAX": "32768",
+   "STRATA_PF_WMMA": "1",
+   "STRATA_ENGINE_NICE": "0",
+   "STRATA_GDN_REC_WARP": "2"
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ }
+]

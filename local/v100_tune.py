@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import statistics
 import subprocess
 import sys
@@ -345,6 +346,9 @@ def print_table(rows):
 
 
 def main():
+    # guarded-run.sh stops the harness with SIGTERM: turn it into SystemExit so every Server.__exit__ runs and the
+    # candidate's systemd-run unit is stopped too (it outlived a guard stop on 2026-10-25 and held port 18081)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--base', type=Path, required=True, help='base profile JSON (port is forced to 18081)')
     ap.add_argument('--candidates', type=Path, required=True,

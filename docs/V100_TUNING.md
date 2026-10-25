@@ -352,6 +352,85 @@ delegated; the harness now pins with a `taskset` prefix, profile key `cpu_affini
 draft 5 lowers acceptance (0.65 vs 0.70) and loses on both. Nothing adopted; the shortlist before the BIOS is
 exhausted. Production stays: pr-all binary, 135 W, 12 workers, draft 4, unpinned, CPU capped 4.5 GHz.
 
+## Round 8 at 150 W: the second PCIe connector (2026-10-25)
+
+Since 2026-10-23 the V100 is fed by both PCIe 8-pin connectors, so the power cap was probed again (production pr-all
+config, 2 rounds, 80K + 2 short, guarded; `local/v100/pl150.sh`):
+
+| cap | 80K prefill | 80K wall | decode short | decode after 80K | peak sample | p99 | GPU max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 135 W | 1298 | 64.0 s | 86.9 | 91.5 | 231 W | 206 W | 58 C |
+| **150 W** | **1393** | **59.8 s** | 89.3 | 92.2 | 251 W | 224 W | 60 C |
+| 165 W | 1464 | 57.2 s | 89.9 | 91.3 | 282 W | 266 W | 62 C |
+
+Secrets 2/2 everywhere. 165 W adds 4-5% on long prompts but its transients pass the card's 250 W rating, on a PC whose
+2026-10-24 power loss is still unexplained; not adopted. **150 W soak passed** (`soak150.sh`: five back-to-back salted
+180K prefills, 13 min): prefill 1173-1182 tok/s (135 W: 1086-1094), decode after 180K 93 tok/s, secrets 5/5, mean
+144 W, peak sample 259 W, p99 234 W, GPU 64 C, Tctl 73 C. Production runs at 150 W (runtime, `v100-tune pl 150`);
+the boot drop-in still says 135 W until changed with root.
+
+Knobs re-checked at 150 W with long contexts (2 rounds, 1 short + fresh 80K + 128K; `round8.sh`):
+
+| candidate | prefill 80K | prefill 128K | decode 80K | decode 128K | 128K wall | slots |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| production (96-slot ring) | 1391 | 1283 | 88.7 | 92.9 | 101.5 s | 12,135 |
+| ring 192 | 1391 | 1282 | 92.1 | 93.5 | 101.6 s | 12,135 |
+| ring 384 | 1386 | 1279 | 89.9 | 93.6 | 101.8 s | 12,135 |
+| KV window 64K | 1392 | 1286 | 90.2 | 94.0 | 101.2 s | 11,931 |
+| 16 workers | 1391 | 1288 | 91.0 | 91.6 | 101.1 s | 12,135 |
+| vision off (reference only) | 1393 | 1292 | 92.7 | 95.2 | 100.8 s | 13,012 |
+
+Prefill is identical across ring sizes even at 150 W: the 96-slot ring is not what limits it, and the stream is not the
+bottleneck. Decode spread follows draft acceptance (production's own two rounds: 86.3 and 91.0 after 80K) and is inside
+noise for every knob. The KV window and 16 workers start slower (60 s / 54 s vs 44 s) and gain nothing. Vision costs
+877 expert slots and about 3-8% short-prompt decode and prefill, 2-3% after long prompts; it stays on (the user's
+choice; the reserve is already near its floor: 1600 MiB was an OOM, 2200 the smallest that worked). Nothing adopted
+besides the cap.
+
+## Round 9: upstream Strata 0.2.6 (engine 0.1.50) against production, 150 W (2026-10-25)
+
+Upstream now carries every Volta piece this fork added (SM70 table, PR 1401's prompt attention, #2357/#2358) plus new
+opt-ins. Set up from source in `~/opt/strata-upstream/0.2.6` (its own data folder; the CUDA 12 engine package
+sha-verified against the release's SHA256SUMS), run through its Python server (`serve/server.py`, configs in `src/ab/`)
+under the same harness via the profile key `argv`. **Stock defaults do not fit at 196K:** without `--resident-experts`
+the 46.8 GiB of experts go to anonymous RAM and less than 4 GB stayed free (guard stop; upstream's own setup estimates
+~77 GB for IQ3_S at 192K). The candidates below therefore run 0.1.50 with production's engine arguments and switches
+(our pack and expert profile, `--resident-experts --kv-resident 32768 --adapt-async 1`, 12 workers, Q8_0 encoder at
+2048 image tokens, `STRATA_PF_WMMA=1`, `STRATA_ENGINE_NICE=0`; 2 rounds, 1 short + fresh 80K + 128K):
+
+| candidate | slots | prefill 80K | prefill 128K | 80K wall | 128K wall | decode short | decode 80K | decode 128K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| production 0.1.43.1 + PR 1401 | 12,194 | 1395 | 1288 | 59.5 s | 101.1 s | 89.1 | 88.4 | 94.1 |
+| 0.1.50, reserve 2400 | 11,477 | 1523 | 1400 | 55.0 s | 93.2 s | 87.1 | 86.0 | 88.4 |
+| 0.1.50, reserve 1000 | 12,135 | 1522 | 1399 | 55.0 s | 93.2 s | 87.9 | 84.6 | 91.6 |
+| **0.1.50, reserve 1000 + `STRATA_GDN_REC_WARP=2`** | 12,135 | **1526** | **1407** | **54.7 s** | **92.7 s** | **91.3** | 87.3 | 91.9 |
+
+Secrets 4/4 for every candidate; power identical (peak samples 248-252 W). The new engine reads long prompts **9%
+faster** (80K and 128K requests 8% shorter); decode is the same within round-to-round noise (production's own two
+rounds after 80K: 90.3 and 86.4). 0.1.50's picture reader leaves 2.1 GB of VRAM idle at the 2400 MiB reserve, so the
+reserve-1000 runs hold the same slot count as production. `STRATA_GDN_REC_WARP=2` changes the FP32 summation order of
+the DeltaNet recurrence (answers can differ slightly) and measured best on every row. Not adopted yet: it needs a
+180K-prompt-plus-two-images fit check at the 1000 MiB reserve and the 24-task suite (answer quality) first.
+
+**Adoption gates (same day, 150 W).** Vision gate (`local/vision_gate.py`: `test_vision.py`, seven scored questions on two
+2560x1440 synthetic screenshots from `local/vision_assets.py`, each at the 2048-token picture cap, and the worst case:
+both pictures plus the 180K fixture in one request):
+
+| | production | 0.1.50, reserve 1000 + GDN 2 |
+| --- | --- | --- |
+| functional checks | pass | pass |
+| perception | 7/7 | 7/7 |
+| worst case (183,704 prompt tokens) | 160.1 s, secrets 3/3, still answers after | 149.0 s, secrets 3/3, still answers after |
+| least VRAM free during the gate | 906 MiB | 782 MiB |
+
+24-task DeepSWE2 suite (seed 40, medium reasoning): production 23/24, median task 28.3 s, suite 878 s, median decode
+97.3 tok/s; 0.1.50 24/24 (e4 flips to a pass), median task 32.2 s, suite 913 s, median decode 95.0 tok/s. Time per
+generated token is 2% higher on 0.1.50 (0.0111 vs 0.0109 s; decode lower on 18 of 24 tasks); the rest of the wall
+difference is answer length, which moves both ways by up to 2x per task (e3 2,207 -> 4,856 tokens, e14 7,142 -> 4,921),
+median +2%. Short agent prompts gain nothing from the faster prompt read. **Verdict: a wash for this workload** (+9%
+on fresh long prompts, -2% decode, quality and vision equal on one seed); production stays on 0.1.43.1 + PR 1401. The
+0.1.50 setup is kept ready in `~/opt/strata-upstream/0.2.6` (profile `local/v100/up-best-18081.json`).
+
 ## Still open
 
 - Rebooted 2026-10-18 16:27: `iommu=pt` active (all 27 IOMMU groups identity), NMI watchdog off, PCIe probe unchanged at

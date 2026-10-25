@@ -1,0 +1,64 @@
+[
+ {
+  "name": "prod-150",
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "ring192",
+  "environment": {
+   "STRATA_PREFILL_RING": "192"
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "ring384",
+  "environment": {
+   "STRATA_PREFILL_RING": "384"
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "kvres64k",
+  "config": {
+   "kv_resident": 65536
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "workers-16",
+  "config": {
+   "threads": 16
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ },
+ {
+  "name": "no-vision",
+  "config": {
+   "vision_mmproj": null,
+   "vision_helper": null,
+   "engine_args": [
+    "--adapt-async",
+    "1"
+   ]
+  },
+  "pre": [
+   "sudo -n /usr/local/sbin/v100-tune rgc",
+   "sudo -n /usr/local/sbin/v100-tune pl 150"
+  ]
+ }
+]

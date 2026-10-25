@@ -11,6 +11,12 @@ CONFIG = Path.home() / '.config/unbiasedstrata/config.json'
 
 
 def command(config):
+    # benchmark-only profile key: a complete command line (e.g. upstream Strata's own server for an A/B); production never sets it
+    if config.get('argv'):
+        argv = config['argv']
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+            raise ValueError('argv must be a list of strings')
+        return list(argv)
     kv = config.get('kv', 'int8')
     resident = config.get('kv_resident', 0)
     if kv not in ('int8', 'k8v4', 'q4_0'):

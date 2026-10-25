@@ -4,6 +4,9 @@ import json, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from long_context import Server
+import signal
+# guarded-run.sh stops with SIGTERM: exit normally so Server.__exit__ stops the test unit
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 profile = json.loads(Path(sys.argv[1]).read_text()); out = Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
 tag = sys.argv[3]; seed = sys.argv[4]
 with Server(profile, out) as s:

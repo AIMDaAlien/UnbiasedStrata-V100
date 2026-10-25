@@ -1,0 +1,61 @@
+[
+ {
+  "image": "status.png",
+  "question": "What is the title in the bar at the very top? Answer with the exact text only.",
+  "expect": [
+   "LILAC SWITCHBOARD - NODE STATUS"
+  ]
+ },
+ {
+  "image": "status.png",
+  "question": "Which node is selected (the row inside the highlighted frame)? Answer with its node name and address.",
+  "expect": [
+   "unraid-gpu",
+   "10.20.30.57:4210"
+  ]
+ },
+ {
+  "image": "status.png",
+  "question": "List every address with its port in the table, exactly as written, one per line.",
+  "expect": [
+   "10.20.30.41:4100",
+   "10.20.30.42:4101",
+   "10.20.30.57:4210",
+   "10.20.30.88:9104",
+   "10.20.30.93:8740"
+  ]
+ },
+ {
+  "image": "status.png",
+  "question": "Transcribe the last four file names in the \"Recent model files\" list exactly.",
+  "expect": [
+   "violet-otter-30B-A3B-IQ3_S.gguf",
+   "mtp-ochre-lynx-Q2_0.gguf",
+   "indigo-wren-12B-Q6_K.gguf",
+   "cobalt-moth-4B-Q8_0.gguf"
+  ]
+ },
+ {
+  "image": "code.png",
+  "question": "In retry.py, what are the values of MAX_RETRIES and BACKOFF_SECONDS? Answer as NAME=value.",
+  "expect": [
+   "MAX_RETRIES=7",
+   "BACKOFF_SECONDS=2.5"
+  ]
+ },
+ {
+  "image": "code.png",
+  "question": "In cluster.csv, which node has 31.6 GB of VRAM, and what is its decode tok/s?",
+  "expect": [
+   "borealis",
+   "92.7"
+  ]
+ },
+ {
+  "image": "code.png",
+  "question": "Transcribe the red error message at the bottom exactly.",
+  "expect": [
+   "ERROR 0x5A3F: checkpoint shard 3 of 8 failed its checksum"
+  ]
+ }
+]
