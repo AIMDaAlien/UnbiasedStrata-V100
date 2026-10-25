@@ -117,7 +117,25 @@ def convcache():
     fig.savefig(OUT / 'conversation-cache.png', dpi=110)
 
 
+def headline():
+    panels = [('Long chat, next message after\nan interruption (seconds)', ['before', 'now'], [62.0, 1.0], '{:.0f} s'),
+              ('Reading an 80K-token prompt\n(tokens per second)', ['135 W', '150 W'], [1298, 1393], '{:,.0f}'),
+              ('Screenshot questions\nanswered correctly (of 7)', ['before', 'now'], [7, 7], '{:.0f}')]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8))
+    for ax, (title, names, vals, fmt) in zip(axes, panels):
+        label_bars(ax, ax.bar(names, vals, color=[GREY, TEAL], width=0.6), fmt.format)
+        ax.set_title(title, fontsize=12)
+        ax.set_yticks([])
+        ax.spines['left'].set_visible(False)
+        ax.set_ylim(0, max(vals) * 1.2)
+    fig.suptitle('2026-10-25 at a glance: much faster long chats, a bit faster reading, vision unchanged',
+                 fontweight='bold')
+    fig.tight_layout()
+    fig.savefig(OUT / 'headline.png', dpi=110)
+
+
 if __name__ == '__main__':
+    headline()
     power()
     upstream()
     if (HERE / 'memory.json').exists():
